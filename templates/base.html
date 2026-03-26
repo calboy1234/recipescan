@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}TheRecipes{% endblock %}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #faf9f6;
+      --surface: #ffffff;
+      --border:  #e5e2db;
+      --accent:  #c0392b;
+      --accent2: #e8d5b7;
+      --text:    #2c2c2c;
+      --muted:   #777;
+      --green:   #27ae60;
+      --radius:  8px;
+      --shadow:  0 2px 8px rgba(0,0,0,.08);
+    }
+
+    body { font-family: Georgia, serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+
+    /* ── Nav ── */
+    nav {
+      background: var(--accent);
+      display: flex;
+      align-items: stretch;
+      padding: 0;
+    }
+    .nav-brand {
+      display: flex; align-items: center; gap: .5rem;
+      padding: 0 1.25rem;
+      border-right: 1px solid rgba(255,255,255,.2);
+      text-decoration: none;
+    }
+    .nav-brand .logo { font-family: Georgia, serif; font-size: 1.2rem; font-weight: bold; color: #fff; }
+    nav a.nav-link {
+      color: rgba(255,255,255,.88);
+      text-decoration: none;
+      font-family: sans-serif;
+      font-size: .87rem;
+      padding: 0 1.1rem;
+      display: flex; align-items: center; gap: .4rem;
+      border-right: 1px solid rgba(255,255,255,.15);
+      transition: background .15s;
+    }
+    nav a.nav-link:hover  { background: rgba(0,0,0,.12); color: #fff; }
+    nav a.nav-link.active { background: rgba(0,0,0,.18); color: #fff; box-shadow: inset 0 -2px 0 rgba(255,255,255,.7); }
+    .nav-spacer { flex: 1; }
+
+    /* Search in nav */
+    .nav-search {
+      display: flex; align-items: center; gap: .5rem;
+      padding: .5rem 1rem;
+    }
+    .nav-search input {
+      padding: .35rem .7rem; border: none; border-radius: var(--radius);
+      font-size: .87rem; width: 200px; background: rgba(255,255,255,.15);
+      color: #fff;
+    }
+    .nav-search input::placeholder { color: rgba(255,255,255,.55); }
+    .nav-search input:focus { outline: none; background: rgba(255,255,255,.25); }
+    .nav-search button {
+      padding: .35rem .8rem; border: none; border-radius: var(--radius);
+      background: rgba(255,255,255,.2); color: #fff; cursor: pointer; font-size: .87rem;
+    }
+    .nav-search button:hover { background: rgba(255,255,255,.3); }
+
+    /* ── Layout ── */
+    main { max-width: 1200px; margin: 2rem auto; padding: 0 1.5rem; }
+
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.25rem; margin-bottom: .75rem; }
+    h3 { font-size: 1.05rem; margin-bottom: .5rem; }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); box-shadow: var(--shadow);
+      padding: 1.25rem; margin-bottom: 1.25rem;
+    }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-block; padding: .15rem .5rem;
+      border-radius: 999px; font-size: .73rem;
+      font-family: sans-serif; font-weight: bold;
+    }
+    .badge-green  { background: #d4edda; color: #155724; }
+    .badge-orange { background: #fff3cd; color: #856404; }
+    .badge-grey   { background: #e9ecef; color: #495057; }
+    .badge-red    { background: #f8d7da; color: #721c24; }
+
+    /* ── Score bar ── */
+    .score-bar { display:flex; align-items:center; gap:.6rem; font-family:sans-serif; font-size:.85rem; }
+    .score-bar .bar-wrap { flex:1; height:8px; background:#eee; border-radius:999px; overflow:hidden; }
+    .score-bar .bar-fill { height:100%; border-radius:999px; background: var(--accent); }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-block; padding: .45rem 1rem;
+      border: none; border-radius: var(--radius); cursor: pointer;
+      font-family: sans-serif; font-size: .9rem; text-decoration: none;
+      transition: opacity .15s;
+    }
+    .btn:hover { opacity: .85; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-success { background: var(--green);  color: #fff; }
+    .btn-danger  { background: #c0392b;        color: #fff; }
+    .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+
+    /* ── Forms ── */
+    label { display:block; font-family:sans-serif; font-size:.85rem; font-weight:bold; margin-bottom:.3rem; }
+    input[type=text], input[type=number], textarea, select {
+      width:100%; padding:.5rem .75rem; border:1px solid var(--border);
+      border-radius:var(--radius); font-size:.95rem; font-family:inherit; background:var(--bg);
+    }
+    textarea { resize: vertical; }
+    .form-group { margin-bottom: 1rem; }
+
+    /* ── Filters ── */
+    .filters { display:flex; gap:.6rem; flex-wrap:wrap; margin-bottom:1.25rem; font-family:sans-serif; }
+    .filters a {
+      padding:.3rem .85rem; border-radius:999px; border:1px solid var(--border);
+      text-decoration:none; color:var(--text); font-size:.85rem;
+    }
+    .filters a.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+
+    /* ── Recipe grid ── */
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:1rem; }
+    .grid-card {
+      background:var(--surface); border:1px solid var(--border);
+      border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden;
+    }
+    .grid-card img { width:100%; height:160px; object-fit:cover; display:block; }
+    .grid-card .info { padding:.75rem; font-family:sans-serif; font-size:.82rem; }
+    .grid-card .info a.title { text-decoration:none; color:var(--accent); font-weight:bold; display:block; margin-bottom:.3rem; }
+
+    /* ── Two-col ── */
+    .two-col { display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; }
+    @media (max-width:768px) { .two-col { grid-template-columns:1fr; } }
+
+    /* ── Rating ── */
+    .stars-filled { color: #f39c12; }
+    .stars-empty  { color: #ddd; }
+
+    /* ── Misc ── */
+    .muted { color:var(--muted); font-size:.85rem; font-family:sans-serif; }
+    .mt1   { margin-top:.75rem; }
+    .mt2   { margin-top:1.5rem; }
+    .gap   { display:flex; gap:.75rem; flex-wrap:wrap; align-items:center; }
+
+    @media print {
+      nav, .no-print { display:none !important; }
+      body { background:#fff; }
+      main { margin:0; padding:0; max-width:100%; }
+      .card { box-shadow:none; border:none; }
+    }
+  </style>
+</head>
+<body>
+<nav>
+  <a class="nav-brand" href="/recipes">
+    <span class="logo">🍴 TheRecipes</span>
+  </a>
+  <a href="/recipes"     class="nav-link {{ 'active' if request.path.startswith('/recipe') or request.path == '/recipes' }}">Browse</a>
+  <a href="/recipes/new" class="nav-link {{ 'active' if request.path == '/recipes/new' }}">+ New Recipe</a>
+  <div class="nav-spacer"></div>
+  <form class="nav-search" action="/search" method="get">
+    <input name="q" placeholder="Search recipes…" value="{{ request.args.get('q','') }}" />
+    <button type="submit">Search</button>
+  </form>
+</nav>
+<main>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Images — RecipeScan{% endblock %}
+
+{% block content %}
+<div class="gap" style="margin-bottom:1rem;">
+  <h1 style="margin:0;">Image Library</h1>
+  <span class="muted">{{ total }} image{{ 's' if total != 1 }}</span>
+</div>
+
+<div class="filters">
+  {% set filters = [
+    ('all',       'All'),
+    ('unreviewed','⚑ Unreviewed Detected'),
+    ('detected',  'Recipe Detected'),
+    ('reviewed',  '✓ Reviewed'),
+    ('unscanned', 'Not Yet Scanned'),
+  ] %}
+  {% for val, label in filters %}
+    <a href="/?filter={{ val }}" class="{{ 'active' if filter_val == val }}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+{% if not rows %}
+  <div class="card muted">No images found for this filter.</div>
+{% else %}
+<div class="grid">
+  {% for row in rows %}
+  <div class="grid-card" id="card-{{ row['id'] }}">
+    <a href="/image/{{ row['id'] }}">
+      <img src="/photo/{{ row['id'] }}" alt="{{ row['file_path'] }}" loading="lazy"
+           onerror="this.style.display='none'" />
+    </a>
+
+    <!-- Reviewed dot indicator -->
+    <div class="reviewed-indicator {{ 'is-reviewed' if row['is_reviewed'] }}"
+         id="dot-{{ row['id'] }}" title="{{ 'Reviewed' if row['is_reviewed'] else 'Not reviewed' }}"></div>
+
+    <div class="info">
+      <a class="title" href="/image/{{ row['id'] }}">{{ row['file_path'].split('/')[-1] }}</a>
+
+      <div class="gap" style="margin-top:.3rem; justify-content:space-between; align-items:center;">
+        <div class="gap" style="gap:.3rem;">
+          {% if row['ocr_id'] is none %}
+            <span class="badge badge-grey">Unscanned</span>
+          {% elif (row['recipe_score'] or 0) >= threshold %}
+            <span class="badge badge-orange">Recipe</span>
+            <span class="muted" style="font-size:.72rem;">{{ "%.0f"|format((row['recipe_score'] or 0)*100) }}%</span>
+          {% else %}
+            <span class="badge badge-grey">Not a recipe</span>
+          {% endif %}
+        </div>
+
+        <!-- Reviewed toggle button (AJAX) -->
+        {% if row['ocr_id'] is not none %}
+        <button
+          class="btn {{ 'btn-reviewed' if row['is_reviewed'] else 'btn-not-reviewed' }}"
+          style="font-size:.7rem; padding:.2rem .55rem;"
+          id="rbtn-{{ row['id'] }}"
+          onclick="toggleReview({{ row['id'] }}, this)"
+          title="{{ 'Mark as unreviewed' if row['is_reviewed'] else 'Mark as reviewed' }}">
+          {{ '✓' if row['is_reviewed'] else '○' }}
+        </button>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="pagination">
+  {% if page > 1 %}
+    <a href="/?page={{ page-1 }}&filter={{ filter_val }}">← Prev</a>
+  {% endif %}
+  {% for p in range(1, total_pages+1) %}
+    {% if p == page %}
+      <span class="active">{{ p }}</span>
+    {% elif p <= 3 or p >= total_pages-2 or (p >= page-2 and p <= page+2) %}
+      <a href="/?page={{ p }}&filter={{ filter_val }}">{{ p }}</a>
+    {% elif p == 4 or p == total_pages-3 %}
+      <span>…</span>
+    {% endif %}
+  {% endfor %}
+  {% if page < total_pages %}
+    <a href="/?page={{ page+1 }}&filter={{ filter_val }}">Next →</a>
+  {% endif %}
+</div>
+{% endif %}
+
+{% endif %}
+
+<script>
+async function toggleReview(imageId, btn) {
+  btn.disabled = true;
+  try {
+    const res  = await fetch(`/image/${imageId}/review`, {
+      method: "POST",
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+    });
+    const data = await res.json();
+    const reviewed = data.is_reviewed === 1;
+
+    // Update button
+    btn.textContent = reviewed ? "✓" : "○";
+    btn.className   = "btn " + (reviewed ? "btn-reviewed" : "btn-not-reviewed");
+    btn.title       = reviewed ? "Mark as unreviewed" : "Mark as reviewed";
+
+    // Update dot
+    const dot = document.getElementById(`dot-${imageId}`);
+    if (dot) {
+      dot.classList.toggle("is-reviewed", reviewed);
+      dot.title = reviewed ? "Reviewed" : "Not reviewed";
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+{% endblock %}

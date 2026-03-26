@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}{{ img['file_path'].split('/')[-1] }} — RecipeScan{% endblock %}
+
+{% block content %}
+<div class="gap" style="margin-bottom:.75rem;">
+  <a href="/" class="btn btn-outline" style="font-size:.83rem;">← Back</a>
+  <h1 style="margin:0; font-size:1.3rem;">{{ img['file_path'].split('/')[-1] }}</h1>
+  {% if img['is_reviewed'] %}
+    <span class="badge badge-green" style="font-size:.82rem; padding:.2rem .6rem;">✓ Reviewed</span>
+  {% else %}
+    <span class="badge badge-grey" style="font-size:.82rem; padding:.2rem .6rem;">Not reviewed</span>
+  {% endif %}
+</div>
+<p class="muted" style="margin-bottom:1.5rem; font-size:.78rem;">{{ img['file_path'] }}</p>
+
+<div class="two-col">
+
+  <!-- ── Left: image + reviewed action ── -->
+  <div>
+    <div class="card" style="padding:.5rem; margin-bottom:.85rem;">
+      <img src="/photo/{{ img['id'] }}" alt="{{ img['file_path'] }}"
+           style="width:100%; border-radius:4px; display:block;"
+           onerror="this.replaceWith(document.createTextNode('Image file not found'))" />
+    </div>
+
+    <p class="muted" style="margin-bottom:.85rem;">Added {{ img['added_at'] }}</p>
+
+    <!-- Reviewed toggle -->
+    <form action="/image/{{ img['id'] }}/review" method="post">
+      <input type="hidden" name="return_to" value="detail" />
+      {% if img['is_reviewed'] %}
+        <button type="submit" class="btn btn-outline" style="width:100%;">
+          ○ Mark as Not Reviewed
+        </button>
+      {% else %}
+        <button type="submit" class="btn btn-success" style="width:100%;">
+          ✓ Mark as Reviewed
+        </button>
+      {% endif %}
+    </form>
+
+    <p class="muted mt1" style="font-size:.76rem; line-height:1.5;">
+      Use this to track which images you have already gone through.<br>
+      Create the actual recipe in <strong>TheRecipes</strong> app.
+    </p>
+  </div>
+
+  <!-- ── Right: OCR results ── -->
+  <div>
+    {% if not ocr %}
+      <div class="card">
+        <p class="muted">This image has not been scanned yet. Run the OCR pipeline from the Pipeline page.</p>
+      </div>
+    {% else %}
+      {% for o in ocr %}
+      <div class="card">
+        <div class="gap" style="margin-bottom:.75rem;">
+          <h2 style="margin:0;">OCR Result</h2>
+          {% if (o['recipe_score'] or 0) >= threshold %}
+            <span class="badge badge-orange">Recipe Detected</span>
+          {% else %}
+            <span class="badge badge-grey">Not a recipe</span>
+          {% endif %}
+        </div>
+
+        <div class="score-bar" style="margin-bottom:.75rem;">
+          <span class="muted">Score</span>
+          <div class="bar-wrap">
+            <div class="bar-fill" style="width:{{ (o['recipe_score'] or 0) * 100 }}%;"></div>
+          </div>
+          <strong>{{ "%.0f"|format((o['recipe_score'] or 0)*100) }}%</strong>
+        </div>
+
+        {% if o['signals'] %}
+        {% set sig = o['signals']|fromjson %}
+        <table style="width:100%; border-collapse:collapse; font-size:.78rem; margin-bottom:.75rem;">
+          <thead>
+            <tr style="background:#f5f5f2;">
+              {% for h in ['Signal','Hits','Score','Max'] %}
+              <th style="text-align:{{ 'left' if loop.first else 'center' if loop.index==2 else 'right' }}; padding:.28rem .45rem; border:1px solid var(--border);">{{ h }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% set rows = [
+              ('Recipe keywords',       sig.keyword_hits,  sig.keyword_score,  '0.35'),
+              ('Measurement units',     sig.unit_hits,     sig.unit_score,     '0.35'),
+              ('Fractions & quantities',sig.fraction_hits, sig.fraction_score, '0.20'),
+              ('Bullet / list',         sig.bullet_hits,   sig.list_score,     '0.10'),
+            ] %}
+            {% for label, hits, score, max in rows %}
+            <tr {% if loop.index % 2 == 0 %}style="background:#fafaf8;"{% endif %}>
+              <td style="padding:.28rem .45rem; border:1px solid var(--border);">{{ label }}</td>
+              <td style="text-align:center; padding:.28rem .45rem; border:1px solid var(--border);">{{ hits }}</td>
+              <td style="text-align:right; padding:.28rem .45rem; border:1px solid var(--border);">{{ "%.2f"|format(score) }}</td>
+              <td style="text-align:right; padding:.28rem .45rem; border:1px solid var(--border); color:var(--muted);">{{ max }}</td>
+            </tr>
+            {% endfor %}
+            <tr style="font-weight:bold; background:#fef5ec;">
+              <td style="padding:.28rem .45rem; border:1px solid var(--border);">Total</td>
+              <td style="padding:.28rem .45rem; border:1px solid var(--border);"></td>
+              <td style="text-align:right; padding:.28rem .45rem; border:1px solid var(--border);">{{ "%.2f"|format(o['recipe_score'] or 0) }}</td>
+              <td style="text-align:right; padding:.28rem .45rem; border:1px solid var(--border); color:var(--muted);">1.00</td>
+            </tr>
+          </tbody>
+        </table>
+        {% endif %}
+
+        <details>
+          <summary style="cursor:pointer; font-size:.87rem; margin-bottom:.5rem;">View raw OCR text</summary>
+          <div class="ocr-text">{{ o['text'] or '(empty)' }}</div>
+        </details>
+      </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

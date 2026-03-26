@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Pipeline — RecipeScan{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom:1.5rem;">OCR Pipeline</h1>
+
+<!-- ── Stats ── -->
+<div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:1rem; margin-bottom:2rem;">
+  {% for label, val, color in [
+    ('Images scanned',       stats.images,              '#e67e22'),
+    ('OCR results',          stats.ocr,                 '#7f8c8d'),
+    ('Recipe detected',      stats.detected,            '#e67e22'),
+    ('Reviewed',             stats.reviewed,            '#27ae60'),
+    ('Unreviewed detected',  stats.unreviewed_detected, '#c0392b'),
+  ] %}
+  <div class="card" style="text-align:center; padding:1rem; margin-bottom:0;">
+    <div style="font-size:2rem; font-weight:bold; color:{{ color }}; font-family:monospace;">{{ val }}</div>
+    <div class="muted" style="font-size:.78rem; margin-top:.25rem;">{{ label }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- ── Run OCR ── -->
+<div class="card" style="margin-bottom:1.25rem;">
+  <h2 style="margin-bottom:.5rem;">Run OCR Pass</h2>
+  <p class="muted" style="margin-bottom:1rem;">
+    Scans <code>/photos</code> for new images, runs Tesseract, scores each image for recipe
+    likelihood. Already-scanned images (identified by hash) are skipped automatically.
+    No recipes are created — use RecipeScan to review, then TheRecipes to create recipes.
+  </p>
+
+  <div class="gap" style="margin-bottom:1rem;">
+    <button id="btn-run-ocr" class="btn btn-primary"
+            onclick="startOCR()" {{ 'disabled' if ocr_running }}>
+      {{ '⏳ Running…' if ocr_running else '▶ Run OCR Now' }}
+    </button>
+    <span id="ocr-status" class="muted" style="font-size:.83rem;">
+      {% if ocr_running %}Pipeline is currently running…{% endif %}
+    </span>
+    {% if last_run %}
+    <span class="muted" style="font-size:.78rem; margin-left:auto;">
+      Last run:
+      {% if last_run['status'] == 'complete' %}
+        ✓ {{ last_run['started_at'] }} —
+        {{ last_run['processed'] }} processed,
+        {{ last_run['skipped'] }} skipped,
+        {{ last_run['errors'] }} errors
+      {% elif last_run['status'] == 'running' %}
+        ⏳ running…
+      {% else %}
+        ⚠ {{ last_run['status'] }}
+      {% endif %}
+    </span>
+    {% endif %}
+  </div>
+
+  <div style="position:relative;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.4rem;">
+      <span class="muted" style="font-size:.76rem;">
+        Pipeline log{% if last_run %} — Run #{{ last_run['id'] }} ({{ last_run['status'] }}){% endif %}
+      </span>
+      <div class="gap">
+        <button onclick="copyLog()" class="btn btn-outline" style="font-size:.72rem; padding:.18rem .55rem;">Copy</button>
+        <button onclick="clearLogDisplay()" class="btn btn-outline" style="font-size:.72rem; padding:.18rem .55rem;">Clear</button>
+      </div>
+    </div>
+    <div id="ocr-log" style="
+      font-family:monospace; font-size:.78rem;
+      background:#1a1a1a; color:#d4d4d4;
+      border-radius:var(--radius); padding:1rem;
+      height:400px; overflow-y:auto;
+      white-space:pre-wrap; line-height:1.55;
+    ">{% if last_log %}{{ last_log|join('\n') }}{% else %}(no previous run log){% endif %}</div>
+  </div>
+</div>
+
+<!-- ── Clear scans ── -->
+<div class="card" style="margin-bottom:1.25rem;">
+  <h2 style="margin-bottom:.5rem;">Clear Scan Data</h2>
+  <p class="muted" style="margin-bottom:1rem;">
+    Deletes all images, OCR results, and run logs. Review status is lost.
+    Your photo files are not affected.
+  </p>
+  <form action="/admin/clear-scans" method="post"
+        onsubmit="return confirm('Clear all scan data? This cannot be undone.')">
+    <button type="submit" class="btn btn-outline" style="border-color:#e67e22; color:#e67e22;">
+      🗑 Clear All Scan Data
+    </button>
+  </form>
+</div>
+
+<!-- ── Full reset ── -->
+<div class="card" style="border-color:#c0392b;">
+  <h2 style="margin-bottom:.5rem; color:#c0392b;">Full Database Reset</h2>
+  <p class="muted" style="margin-bottom:1rem;">
+    Wipes all tables including settings, then re-initialises with defaults.
+    <strong>Cannot be undone.</strong>
+  </p>
+  <form action="/admin/reset-db" method="post"
+        onsubmit="return confirm('FULL RESET — delete all data and settings. Cannot be undone. Continue?')">
+    <button type="submit" class="btn btn-danger">⚠ Full Database Reset</button>
+  </form>
+</div>
+
+<script>
+const logEl = document.getElementById('ocr-log');
+
+function scrollToBottom() { logEl.scrollTop = logEl.scrollHeight; }
+function appendLine(line) {
+  const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+  logEl.textContent += (logEl.textContent ? '\n' : '') + line;
+  if (atBottom) scrollToBottom();
+}
+function copyLog()        { navigator.clipboard.writeText(logEl.textContent); }
+function clearLogDisplay(){ logEl.textContent = ''; }
+
+window.addEventListener('DOMContentLoaded', () => {
+  if (logEl.textContent.trim()) scrollToBottom();
+});
+
+function startOCR() {
+  const btn    = document.getElementById('btn-run-ocr');
+  const status = document.getElementById('ocr-status');
+  btn.disabled    = true;
+  btn.textContent = '⏳ Running…';
+  status.textContent = 'Starting pipeline…';
+  logEl.textContent  = '';
+
+  fetch('/admin/run-ocr', { method: 'POST' }).then(r => {
+    if (!r.ok && r.status !== 204) {
+      appendLine('[error] Could not start OCR.');
+      btn.disabled    = false;
+      btn.textContent = '▶ Run OCR Now';
+      return;
+    }
+    status.textContent = 'Running…';
+    const es = new EventSource('/admin/ocr-stream');
+    es.onmessage = e => {
+      if (e.data === '__DONE__') {
+        es.close();
+        btn.disabled    = false;
+        btn.textContent = '▶ Run OCR Now';
+        status.textContent = 'Complete — refresh to update stats.';
+      } else {
+        appendLine(e.data);
+      }
+    };
+    es.onerror = () => {
+      es.close();
+      appendLine('\n[stream closed]');
+      btn.disabled    = false;
+      btn.textContent = '▶ Run OCR Now';
+      status.textContent = '';
+    };
+  });
+}
+
+{% if ocr_running %}
+document.addEventListener('DOMContentLoaded', () => {
+  logEl.textContent = '';
+  const es = new EventSource('/admin/ocr-stream');
+  es.onmessage = e => {
+    if (e.data === '__DONE__') { es.close(); location.reload(); }
+    else appendLine(e.data);
+  };
+  es.onerror = () => es.close();
+});
+{% endif %}
+</script>
+{% endblock %}
