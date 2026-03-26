@@ -5,16 +5,15 @@ A web UI for browsing scanned recipe images, reviewing OCR results,
 managing pipeline runs, and adjusting detection thresholds.
 """
 
-import os
+import importlib
 import json
+import mimetypes
+import os
 import sqlite3
 import threading
-import mimetypes
-from datetime import datetime
-from functools import wraps
+import time
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, send_file
-from werkzeug.security import safe_str
 
 from ocr_pipeline import main as run_ocr_pipeline
 from recipe_detector import extract_title
@@ -22,9 +21,11 @@ from recipe_detector import extract_title
 # ── Configuration ──────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-DB_PATH = "/data/database/recipescan.db"
-PHOTO_DIR = "/photos"
+DB_PATH = os.environ.get("DB_PATH", "/data/database/recipescan.db")
 ITEMS_PER_PAGE = 20
+
+# Register custom Jinja2 filters
+app.jinja_env.filters['fromjson'] = json.loads
 
 # Global state for OCR pipeline
 ocr_lock = threading.Lock()
@@ -51,19 +52,6 @@ def get_threshold():
     except Exception:
         return 0.75
 
-def get_image_status(image_row, threshold):
-    """
-    Determine the status of an image (unscanned, not_recipe, recipe, etc).
-    Returns a tuple: (status_key, badge_label, badge_color)
-    """
-    if image_row['ocr_id'] is None:
-        return ('unscanned', 'Unscanned', 'grey')
-    score = image_row['recipe_score'] or 0
-    if score >= threshold:
-        return ('detected', f'Recipe ({score*100:.0f}%)', 'orange')
-    else:
-        return ('not_recipe', 'Not a recipe', 'grey')
-
 # ── Routes: Gallery & Image Management ─────────────────────────────────
 
 @app.route('/')
@@ -72,9 +60,9 @@ def index():
     threshold = get_threshold()
     page = request.args.get('page', 1, type=int)
     filter_val = request.args.get('filter', 'all')
-    
+
     conn = get_db()
-    
+
     # Build WHERE clause based on filter
     where_clauses = []
     if filter_val == 'unreviewed':
@@ -91,9 +79,9 @@ def index():
         params = []
     else:  # 'all'
         params = []
-    
+
     where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
-    
+
     # Count total for this filter
     query_count = f"""
         SELECT COUNT(*) as cnt FROM images img
@@ -102,11 +90,11 @@ def index():
     """
     total = conn.execute(query_count, params).fetchone()['cnt']
     total_pages = (total + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    
+
     # Fetch paginated results
     offset = (page - 1) * ITEMS_PER_PAGE
     query = f"""
-        SELECT 
+        SELECT
             img.id,
             img.file_path,
             img.is_reviewed,
@@ -121,13 +109,13 @@ def index():
     """
     rows = conn.execute(query, params + [ITEMS_PER_PAGE, offset]).fetchall()
     conn.close()
-    
+
     # Ensure page is valid
     if page < 1:
         page = 1
     if page > total_pages and total_pages > 0:
         page = total_pages
-    
+
     return render_template(
         'index.html',
         rows=rows,
@@ -143,25 +131,25 @@ def image_detail(image_id):
     """Show detailed view of a single image with OCR results."""
     threshold = get_threshold()
     conn = get_db()
-    
+
     # Fetch image
     img = conn.execute(
         "SELECT * FROM images WHERE id = ?",
         (image_id,)
     ).fetchone()
-    
+
     if not img:
         conn.close()
-        return "Image not found", 404
-    
+        return render_template('error.html', error="Image not found"), 404
+
     # Fetch OCR results
     ocr = conn.execute(
         "SELECT * FROM ocr_results WHERE image_id = ? ORDER BY created_at DESC",
         (image_id,)
     ).fetchall()
-    
+
     conn.close()
-    
+
     return render_template(
         'image_detail.html',
         img=img,
@@ -178,14 +166,14 @@ def serve_photo(image_id):
         (image_id,)
     ).fetchone()
     conn.close()
-    
+
     if not img:
-        return "Not found", 404
-    
+        return render_template('error.html', error="Photo not found"), 404
+
     file_path = img['file_path']
     if not os.path.exists(file_path):
-        return "File not found", 404
-    
+        return render_template('error.html', error="Photo file not found on disk"), 404
+
     # Guess MIME type
     mime_type, _ = mimetypes.guess_type(file_path)
     return send_file(file_path, mimetype=mime_type or 'image/jpeg')
@@ -194,17 +182,17 @@ def serve_photo(image_id):
 def toggle_review(image_id):
     """Toggle the 'is_reviewed' status of an image (AJAX or form)."""
     conn = get_db()
-    
+
     # Get current status
     img = conn.execute(
         "SELECT is_reviewed FROM images WHERE id = ?",
         (image_id,)
     ).fetchone()
-    
+
     if not img:
         conn.close()
         return jsonify({"error": "Image not found"}), 404
-    
+
     # Toggle
     new_status = 1 - img['is_reviewed']
     conn.execute(
@@ -213,7 +201,7 @@ def toggle_review(image_id):
     )
     conn.commit()
     conn.close()
-    
+
     # Return JSON if AJAX, otherwise redirect
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
         return jsonify({"is_reviewed": new_status})
@@ -227,7 +215,7 @@ def toggle_review(image_id):
 def settings():
     """Display and update recipe detection threshold."""
     conn = get_db()
-    
+
     if request.method == 'POST':
         threshold = request.form.get('recipe_threshold', '0.75')
         try:
@@ -235,7 +223,7 @@ def settings():
             threshold = max(0.0, min(1.0, threshold))  # Clamp 0-1
         except ValueError:
             threshold = 0.75
-        
+
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
             ('recipe_threshold', str(threshold))
@@ -243,10 +231,10 @@ def settings():
         conn.commit()
         conn.close()
         return redirect(url_for('settings'))
-    
+
     threshold = get_threshold()
     conn.close()
-    
+
     return render_template('settings.html', threshold=threshold)
 
 # ── Routes: Admin & Pipeline ───────────────────────────────────────────
@@ -256,12 +244,12 @@ def admin():
     """Admin/pipeline control page."""
     global ocr_running
     conn = get_db()
-    
+
     # Fetch stats
     stats = {}
     stats['images'] = conn.execute("SELECT COUNT(*) as c FROM images").fetchone()['c']
     stats['ocr'] = conn.execute("SELECT COUNT(*) as c FROM ocr_results").fetchone()['c']
-    
+
     threshold = get_threshold()
     stats['detected'] = conn.execute(
         "SELECT COUNT(*) as c FROM ocr_results WHERE recipe_score >= ?",
@@ -276,12 +264,12 @@ def admin():
         "WHERE i.is_reviewed = 0 AND o.recipe_score >= ?",
         (threshold,)
     ).fetchone()['c']
-    
+
     # Last OCR run
     last_run = conn.execute(
         "SELECT * FROM ocr_runs ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
-    
+
     # Last OCR log lines
     last_log = []
     if last_run:
@@ -290,9 +278,9 @@ def admin():
             (last_run['id'],)
         ).fetchall()
         last_log = [row['line'] for row in log_rows]
-    
+
     conn.close()
-    
+
     return render_template(
         'admin.html',
         stats=stats,
@@ -305,13 +293,13 @@ def admin():
 def run_ocr():
     """Start the OCR pipeline in a background thread."""
     global ocr_running, ocr_thread, ocr_lock
-    
+
     with ocr_lock:
         if ocr_running:
             return "OCR already running", 409
-        
+
         ocr_running = True
-    
+
     def ocr_worker():
         global ocr_running
         try:
@@ -321,16 +309,16 @@ def run_ocr():
             conn.commit()
             run_id = conn.lastrowid
             conn.close()
-            
+
             # Run OCR pipeline
             run_ocr_pipeline(run_id=run_id)
         finally:
             with ocr_lock:
                 ocr_running = False
-    
+
     ocr_thread = threading.Thread(target=ocr_worker, daemon=True)
     ocr_thread.start()
-    
+
     return "", 204
 
 @app.route('/admin/ocr-stream')
@@ -342,14 +330,14 @@ def ocr_stream():
             "SELECT id FROM ocr_runs ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         conn.close()
-        
+
         if not last_run:
             yield "data: [error] No OCR run found\n\n"
             return
-        
+
         run_id = last_run['id']
         last_line_id = 0
-        
+
         # Stream new log lines as they arrive
         while True:
             conn = get_db()
@@ -358,13 +346,13 @@ def ocr_stream():
                 (run_id, last_line_id)
             ).fetchall()
             conn.close()
-            
+
             for row in rows:
                 last_line_id = row['id']
                 # Escape newlines for SSE
                 line = row['line'].replace('\n', '\\n')
                 yield f"data: {line}\n\n"
-            
+
             # Check if pipeline is done
             conn = get_db()
             run_status = conn.execute(
@@ -372,15 +360,13 @@ def ocr_stream():
                 (run_id,)
             ).fetchone()
             conn.close()
-            
+
             if run_status and run_status['status'] != 'running':
                 yield "data: __DONE__\n\n"
                 break
-            
-            # Short sleep to avoid busy-waiting
-            import time
+
             time.sleep(0.1)
-    
+
     return generate(), 200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -403,20 +389,21 @@ def clear_scans():
 def reset_db():
     """Full database reset: delete all tables and reinitialize."""
     conn = get_db()
-    
+
     # Drop all tables
     conn.execute("DROP TABLE IF EXISTS ocr_log_lines")
     conn.execute("DROP TABLE IF EXISTS ocr_runs")
     conn.execute("DROP TABLE IF EXISTS ocr_results")
     conn.execute("DROP TABLE IF EXISTS images")
     conn.execute("DROP TABLE IF EXISTS settings")
-    
+
     conn.commit()
     conn.close()
-    
-    # Reinitialize database
-    import init_db  # This will recreate all tables
-    
+
+    # Reinitialise — importlib.reload forces re-execution even if already imported
+    import init_db as _init_db
+    importlib.reload(_init_db)
+
     return redirect(url_for('admin'))
 
 # ── Error Handlers ────────────────────────────────────────────────────
