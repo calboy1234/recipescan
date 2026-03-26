@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Settings — RecipeScan{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom:1.5rem;">Settings</h1>
+
+<div class="card" style="max-width:540px;">
+  <h2 style="margin-bottom:.5rem;">Recipe Detection Threshold</h2>
+  <p class="muted" style="margin-bottom:1.25rem;">
+    Controls the minimum heuristic score required before an image is labelled
+    as a <em>Recipe Detected</em> in the gallery. Does not create recipes —
+    just controls which images are highlighted for review.
+    Takes effect on the next OCR pass.
+  </p>
+
+  <form action="/settings" method="post">
+    <div class="form-group">
+      <label for="recipe_threshold">
+        Threshold —
+        <strong id="threshold-display">{{ (threshold|float * 100)|round|int }}%</strong>
+      </label>
+      <div style="display:flex; align-items:center; gap:1rem; margin-top:.5rem;">
+        <input type="range" id="threshold-slider" min="0" max="100" step="5"
+               value="{{ (threshold|float * 100)|round|int }}"
+               style="flex:1; accent-color:var(--accent);"
+               oninput="
+                 document.getElementById('threshold-display').textContent = this.value + '%';
+                 document.getElementById('slider-label').textContent = this.value + '%';
+                 document.getElementById('recipe_threshold').value = (this.value / 100).toFixed(2);
+               " />
+        <span id="slider-label" style="font-weight:bold; min-width:3rem; text-align:right;">
+          {{ (threshold|float * 100)|round|int }}%
+        </span>
+      </div>
+      <input type="hidden" id="recipe_threshold" name="recipe_threshold" value="{{ threshold }}" />
+    </div>
+
+    <div style="display:flex; justify-content:space-between; font-size:.78rem; color:var(--muted); margin-bottom:1.25rem;">
+      <span>0% — flag everything</span>
+      <span style="color:#856404;">40% — permissive</span>
+      <span style="color:#1e8449;">75% — recommended</span>
+      <span>100% — nothing</span>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Save</button>
+  </form>
+</div>
+
+<div class="card" style="max-width:540px; margin-top:1.25rem;">
+  <h2 style="margin-bottom:.5rem;">Score Reference</h2>
+  <table style="width:100%; border-collapse:collapse; font-size:.83rem;">
+    <tr style="background:#f5f5f2;">
+      <th style="text-align:left; padding:.35rem .5rem; border:1px solid var(--border);">Score</th>
+      <th style="text-align:left; padding:.35rem .5rem; border:1px solid var(--border);">Typical meaning</th>
+    </tr>
+    {% for score, meaning in [
+      ('90–100%', 'Very clearly a recipe — many measurements, keywords, structure'),
+      ('75–89%',  'Likely a recipe — good signals, possibly short or simple'),
+      ('40–74%',  'Borderline — worth a manual look'),
+      ('0–39%',   'Probably not a recipe'),
+    ] %}
+    <tr {% if loop.index % 2 == 0 %}style="background:#fafaf8;"{% endif %}>
+      <td style="padding:.35rem .5rem; border:1px solid var(--border); font-weight:bold;">{{ score }}</td>
+      <td style="padding:.35rem .5rem; border:1px solid var(--border);">{{ meaning }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}
