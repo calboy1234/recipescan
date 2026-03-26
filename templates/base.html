@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{% block title %}TheRecipes{% endblock %}</title>
+  <title>{% block title %}RecipeScan{% endblock %}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -49,24 +49,6 @@
     nav a.nav-link:hover  { background: rgba(0,0,0,.12); color: #fff; }
     nav a.nav-link.active { background: rgba(0,0,0,.18); color: #fff; box-shadow: inset 0 -2px 0 rgba(255,255,255,.7); }
     .nav-spacer { flex: 1; }
-
-    /* Search in nav */
-    .nav-search {
-      display: flex; align-items: center; gap: .5rem;
-      padding: .5rem 1rem;
-    }
-    .nav-search input {
-      padding: .35rem .7rem; border: none; border-radius: var(--radius);
-      font-size: .87rem; width: 200px; background: rgba(255,255,255,.15);
-      color: #fff;
-    }
-    .nav-search input::placeholder { color: rgba(255,255,255,.55); }
-    .nav-search input:focus { outline: none; background: rgba(255,255,255,.25); }
-    .nav-search button {
-      padding: .35rem .8rem; border: none; border-radius: var(--radius);
-      background: rgba(255,255,255,.2); color: #fff; cursor: pointer; font-size: .87rem;
-    }
-    .nav-search button:hover { background: rgba(255,255,255,.3); }
 
     /* ── Layout ── */
     main { max-width: 1200px; margin: 2rem auto; padding: 0 1.5rem; }
@@ -128,23 +110,48 @@
     }
     .filters a.active { background:var(--accent); color:#fff; border-color:var(--accent); }
 
-    /* ── Recipe grid ── */
+    /* ── Image grid ── */
     .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:1rem; }
     .grid-card {
       background:var(--surface); border:1px solid var(--border);
       border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden;
+      position: relative;
     }
     .grid-card img { width:100%; height:160px; object-fit:cover; display:block; }
     .grid-card .info { padding:.75rem; font-family:sans-serif; font-size:.82rem; }
     .grid-card .info a.title { text-decoration:none; color:var(--accent); font-weight:bold; display:block; margin-bottom:.3rem; }
 
+    /* ── Reviewed indicator dot ── */
+    .reviewed-indicator {
+      position:absolute; top:.5rem; right:.5rem;
+      width:10px; height:10px; border-radius:50%;
+      background: #ccc; border: 1px solid rgba(0,0,0,.15);
+    }
+    .reviewed-indicator.is-reviewed { background: var(--green); }
+
+    /* ── Review toggle buttons ── */
+    .btn-reviewed     { background: var(--green); color: #fff; }
+    .btn-not-reviewed { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+
+    /* ── Pagination ── */
+    .pagination { display:flex; gap:.4rem; justify-content:center; margin-top:1.5rem; font-family:sans-serif; font-size:.88rem; }
+    .pagination a, .pagination span {
+      padding:.3rem .7rem; border-radius:var(--radius);
+      border:1px solid var(--border); text-decoration:none; color:var(--text);
+    }
+    .pagination span.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .pagination a:hover { background:#f0ede6; }
+
     /* ── Two-col ── */
     .two-col { display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; }
     @media (max-width:768px) { .two-col { grid-template-columns:1fr; } }
 
-    /* ── Rating ── */
-    .stars-filled { color: #f39c12; }
-    .stars-empty  { color: #ddd; }
+    /* ── OCR text ── */
+    .ocr-text {
+      font-family:monospace; font-size:.82rem; white-space:pre-wrap;
+      background:#f8f8f6; border:1px solid var(--border);
+      border-radius:var(--radius); padding:.75rem; max-height:300px; overflow-y:auto;
+    }
 
     /* ── Misc ── */
     .muted { color:var(--muted); font-size:.85rem; font-family:sans-serif; }
@@ -162,16 +169,12 @@
 </head>
 <body>
 <nav>
-  <a class="nav-brand" href="/recipes">
-    <span class="logo">🍴 TheRecipes</span>
+  <a class="nav-brand" href="/">
+    <span class="logo">📷 RecipeScan</span>
   </a>
-  <a href="/recipes"     class="nav-link {{ 'active' if request.path.startswith('/recipe') or request.path == '/recipes' }}">Browse</a>
-  <a href="/recipes/new" class="nav-link {{ 'active' if request.path == '/recipes/new' }}">+ New Recipe</a>
-  <div class="nav-spacer"></div>
-  <form class="nav-search" action="/search" method="get">
-    <input name="q" placeholder="Search recipes…" value="{{ request.args.get('q','') }}" />
-    <button type="submit">Search</button>
-  </form>
+  <a href="/"        class="nav-link {{ 'active' if request.path == '/' or request.path.startswith('/image') or request.path.startswith('/photo') }}">Images</a>
+  <a href="/admin"   class="nav-link {{ 'active' if request.path.startswith('/admin') }}">Pipeline</a>
+  <a href="/settings" class="nav-link {{ 'active' if request.path == '/settings' }}">Settings</a>
 </nav>
 <main>
   {% block content %}{% endblock %}

@@ -8,7 +8,7 @@ database — uses CREATE TABLE IF NOT EXISTS and ALTER TABLE migrations.
 import os
 import sqlite3
 
-DB_PATH = "/data/database/recipescan.db"
+DB_PATH = os.environ.get("DB_PATH", "/data/database/recipescan.db")
 
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
