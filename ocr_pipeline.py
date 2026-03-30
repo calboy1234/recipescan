@@ -39,6 +39,37 @@ Log pruning:
   After each completed run, log lines for runs older than `log_retention_runs`
   are deleted so the log table does not grow without bound.
 
+Bug fixes (v2.1)
+----------------
+OMP_NUM_THREADS=1:
+  Tesseract uses OpenMP internally. Without capping it, each Python worker
+  spawns multiple OS threads, creating N_workers × N_omp_threads threads all
+  fighting for CPU time and causing a context-switch death spiral. Capping to
+  1 makes Python's ThreadPoolExecutor the sole concurrency layer.
+
+PSM 6 → PSM 4 with two-column detection:
+  PSM 6 ("single uniform block") reads horizontally across the full image
+  width, which merges both columns of a two-column ingredient list into each
+  line. PSM 4 reads a single column top-to-bottom. For images detected as
+  two-column, the image is split down the middle and each half is OCR'd
+  independently with PSM 4, then the results are re-joined.
+
+Busy-wait → concurrent.futures.wait():
+  The old inner loop polled every pending future with f.done() and slept 50ms
+  if none were ready — burning CPU constantly. Replaced with wait(FIRST_COMPLETED)
+  which blocks in the OS until a future actually finishes.
+
+Enhanced preprocessing:
+  Uses cv2.adaptiveThreshold (the gold standard for document binarization)
+  instead of the PIL-only contrast/autocontrast approach. Adaptive thresholding
+  computes a separate threshold per image region, handling shadows, glare, and
+  yellowing that defeat global thresholding. GaussianBlur runs first to suppress
+  sensor noise before thresholding amplifies it.
+
+detect_rotation robustness:
+  Explicit guard on osd variable presence before regex matching ensures that
+  TesseractError on corrupted images is caught cleanly by the outer handler.
+
 Parallelism model
 -----------------
   ThreadPoolExecutor with configurable workers. DB writes are serialised in
@@ -53,10 +84,21 @@ import time
 import sqlite3
 import hashlib
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 from PIL import Image as PILImage, ImageOps
+import cv2
+import numpy as np
 import pytesseract
+
+# ── OpenMP thread cap ──────────────────────────────────────────────────────────
+#
+# Tesseract uses OpenMP internally. Without this, each of your N Python workers
+# will spin up M OpenMP threads, giving you N×M threads all fighting for CPU
+# time. Setting OMP_NUM_THREADS=1 tells Tesseract to use exactly one thread per
+# call, making your Python-level ThreadPoolExecutor the sole parallelism layer.
+# In practice this is always faster than letting OpenMP and Python fight.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from recipe_detector import score_text
 
@@ -124,11 +166,111 @@ def detect_rotation(img: PILImage.Image) -> tuple[int, float]:
         return 0, 0.0
 
 
+def preprocess(img: PILImage.Image) -> PILImage.Image:
+    """
+    Greyscale → denoise → adaptive binarization.
+
+    cv2.adaptiveThreshold computes a separate threshold for every small
+    neighbourhood of the image rather than one global value. This handles
+    the uneven lighting, shadows, and yellowing that are common in phone
+    photos of physical recipe cards — conditions where a global threshold
+    leaves shadow regions muddy or blows out bright regions entirely.
+
+    Pipeline:
+      1. Convert PIL → numpy greyscale array (cv2 works on numpy uint8).
+      2. GaussianBlur kernel (3×3) to suppress sensor noise before thresholding.
+         Blur must come first — thresholding after noise amplifies the noise.
+      3. adaptiveThreshold with ADAPTIVE_THRESH_GAUSSIAN_C:
+           - blockSize=31  — neighbourhood diameter in pixels. Larger values
+             tolerate broader lighting gradients; 31px is a good fit for
+             recipe card text at typical phone-photo resolutions.
+           - C=10          — constant subtracted from the local mean before
+             thresholding. Higher values are more aggressive at calling pixels
+             "background"; 10 is a safe middle ground for faded ink on paper.
+      4. Convert result back to PIL for the rest of the pipeline (rotation,
+         column detection, Tesseract call).
+
+    The output is a pure black-and-white image (0 or 255 per pixel), which
+    is exactly what Tesseract's internal binarizer would try to produce anyway
+    — we're just doing it better with more spatial context.
+    """
+    arr = np.array(img.convert("L"))
+    arr = cv2.GaussianBlur(arr, (3, 3), 0)
+    arr = cv2.adaptiveThreshold(
+        arr,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=31,
+        C=10,
+    )
+    return PILImage.fromarray(arr)
+
+
+def detect_column_split(img: PILImage.Image) -> bool:
+    """
+    Return True if the image appears to have two side-by-side text columns.
+
+    Strategy: examine the middle third of the image width. If that vertical
+    band has a significantly lower average pixel density than the left and
+    right thirds, the image is likely two-column. This catches the classic
+    recipe-card layout (ingredients left, amounts right, or two ingredient
+    columns) without requiring OpenCV.
+
+    Threshold is deliberately conservative — it's better to run PSM 4 on a
+    genuinely single-column image than to split a single column in half.
+    """
+    w, h  = img.size
+    third = w // 3
+
+    # Sample the middle third of the image height to avoid headers/footers
+    top    = h // 4
+    bottom = 3 * h // 4
+
+    def col_darkness(x0, x1):
+        region = img.crop((x0, top, x1, bottom))
+        pixels = list(region.getdata())
+        return sum(255 - p for p in pixels) / len(pixels)   # higher = more ink
+
+    left_ink   = col_darkness(0,           third)
+    mid_ink    = col_darkness(third,       2 * third)
+    right_ink  = col_darkness(2 * third,   w)
+
+    avg_side = (left_ink + right_ink) / 2
+    # Call it two-column if the middle strip has ≤40% of the ink density of the sides
+    return avg_side > 0 and (mid_ink / avg_side) < 0.40
+
+
+def ocr_region(img: PILImage.Image, psm: int) -> str:
+    """Run Tesseract on a single PIL image region with the given PSM."""
+    return pytesseract.image_to_string(img, config=f"--psm {psm}")
+
+
 def run_ocr(path: str, lines: list) -> tuple[str, int, float]:
+    """
+    Open, preprocess, orient, then OCR the image with layout-aware PSM selection.
+
+    PSM strategy
+    ------------
+    PSM 6 ("single uniform block") reads horizontally across the full image
+    width. For two-column recipe cards this merges both columns into each line,
+    destroying ingredient list structure entirely.
+
+    Instead:
+    - Detect whether the image has two side-by-side columns.
+    - If two-column: split the image down the middle, run PSM 4 ("single
+      column of variable-size text") on each half independently, then join
+      the results. Each column is read top-to-bottom correctly.
+    - If single-column: use PSM 4 directly, which handles variable font sizes
+      and mixed-case recipe text better than PSM 6.
+
+    PSM 4 is the right default for recipe cards: it tolerates mixed font
+    sizes (title vs. ingredient vs. instruction text) and doesn't assume a
+    rigid grid the way PSM 6 does.
+    """
     img  = PILImage.open(path)
     img  = ImageOps.exif_transpose(img)
-    grey = img.convert("L")
-    grey = ImageOps.autocontrast(grey)
+    grey = preprocess(img)
 
     angle, confidence = detect_rotation(grey)
 
@@ -148,7 +290,29 @@ def run_ocr(path: str, lines: list) -> tuple[str, int, float]:
     else:
         lines.append("  rotation  : OSD unavailable or image has too little text")
 
-    text = pytesseract.image_to_string(grey, config=r"--psm 6")
+    two_col = detect_column_split(grey)
+    if two_col:
+        w, h      = grey.size
+        left_half  = grey.crop((0,     0, w // 2, h))
+        right_half = grey.crop((w // 2, 0, w,     h))
+        left_text  = ocr_region(left_half,  psm=4)
+        right_text = ocr_region(right_half, psm=4)
+        # Interleave lines from each column so the combined text reads naturally
+        left_lines  = left_text.splitlines()
+        right_lines = right_text.splitlines()
+        combined = []
+        for l, r in zip(left_lines, right_lines):
+            combined.append(l)
+            if r.strip():
+                combined.append(r)
+        combined.extend(left_lines[len(right_lines):])
+        combined.extend(right_lines[len(left_lines):])
+        text = "\n".join(combined)
+        lines.append(f"  layout    : two-column detected — split OCR applied")
+    else:
+        text = ocr_region(grey, psm=4)
+        lines.append(f"  layout    : single-column (PSM 4)")
+
     return text, angle, confidence
 
 
@@ -454,25 +618,22 @@ def main(
             _submit_next()
 
         while pending:
-            # Respect stop requests between chunks
+            # Block until at least one future completes (or 0.5 s timeout to
+            # allow the stop_event check to fire). This replaces the old
+            # busy-wait poll loop and lets the OS do the blocking efficiently.
+            done_futures, _ = wait(
+                pending.keys(), timeout=0.5, return_when=FIRST_COMPLETED
+            )
+
+            # Respect stop requests — checked after every wait() cycle
             if stop_event.is_set():
                 log_db("")
                 log_db("[stopped] Stop requested — draining current batch then exiting.")
-                # Cancel pending futures if possible (best-effort)
                 for f in list(pending):
                     f.cancel()
                 break
 
-            # Wait for the next completion
-            done_futures = []
-            for f in list(pending):
-                if f.done():
-                    done_futures.append(f)
-
             if not done_futures:
-                # Nothing done yet — wait briefly then retry
-                import time as _time
-                _time.sleep(0.05)
                 continue
 
             for future in done_futures:

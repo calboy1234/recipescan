@@ -1,67 +1,132 @@
-"""
-recipe_detector.py
-
-Score-based heuristic recipe detector.
-
-Each signal contributes points toward a total score (0.0–1.0).
-A score >= RECIPE_THRESHOLD is classified as a recipe.
-
-Signals
--------
-- Recipe keywords (title/section words)     → up to 0.35
-- Measurement units                         → up to 0.35
-- Fraction / quantity patterns              → up to 0.20
-- Ingredient list structure (bullets/lines) → up to 0.10
-
-Note: Numbered step lists are intentionally NOT scored — many valid recipes
-(especially handwritten cards or short/simple ones) have no numbered steps,
-and this signal was causing false negatives.
-"""
-
 import re
 
 # ── Tuneable threshold ────────────────────────────────────────────────────────
-RECIPE_THRESHOLD = 0.40   # score at or above this → is_recipe = True
+RECIPE_THRESHOLD = 0.60 
 
-# ── Signal word lists ─────────────────────────────────────────────────────────
+# ── Signal patterns ───────────────────────────────────────────────────────────
+
 RECIPE_KEYWORDS = [
-    "ingredients", "ingredient", "directions", "instructions", "method",
-    "preparation", "preheat", "serves", "servings", "yield", "yields",
+    "ingredients", "ingredient", "preheat", "serves", "servings",
     "prep time", "cook time", "bake", "baking", "recipe", "makes",
-    "refrigerate", "marinate", "garnish", "season to taste", "stir",
-    "simmer", "boil", "whisk", "fold in", "mix", "combine",
+    "refrigerate", "marinate", "garnish", "stir", "simmer", "boil", 
+    "whisk", "fold in", "mix", "combine", "sauté", "chop", "mince", 
+    "dice", "puree", "drain", "grease", "sprinkle", "knead", "dissolve", 
+    "skillet", "saucepan", "oven", "rack", "instructions", "directions", "pan",
+    "pot", "baking sheet", "cookie sheet", "casserole dish", "slow cooker", "instant pot",
+    "grill", "broil", "roast", "steam", "fry", "deep fry", "air fry",
+    "blend", "stand mixer", "hand mixer", "mixing bowl", "blender"
+]
+
+COMMON_INGREDIENTS = [
+    # Base pantry
+    "salt", "sea salt", "kosher salt", "black pepper", "white pepper",
+    "sugar", "granulated sugar", "brown sugar", "powdered sugar", "confectioners sugar",
+    "flour", "all-purpose flour", "bread flour", "cake flour", "whole wheat flour",
+    "cornstarch", "starch", "baking powder", "baking soda", "yeast",
+    "vanilla", "vanilla extract", "almond extract", "cocoa", "cocoa powder",
+    "cornmeal", "rolled oats", "oats", "breadcrumbs", "panko",
+    "rice", "white rice", "brown rice", "jasmine rice", "basmati rice",
+    "pasta", "noodles", "spaghetti", "macaroni", "tortilla", "wrap",
+    "oil", "olive oil", "vegetable oil", "canola oil", "coconut oil",
+    "butter", "margarine", "shortening", "lard",
+    "honey", "maple syrup", "molasses", "corn syrup",
+    "vinegar", "white vinegar", "apple cider vinegar", "balsamic vinegar",
+    "soy sauce", "worcestershire sauce", "hot sauce", "mustard", "ketchup",
+    "mayonnaise", "salsa", "broth", "stock", "bouillon",
+
+    # Dairy
+    "milk", "whole milk", "skim milk", "buttermilk", "cream", "heavy cream",
+    "whipping cream", "sour cream", "yogurt", "greek yogurt", "buttermilk",
+    "cheese", "cheddar", "parmesan", "mozzarella", "cream cheese", "cottage cheese",
+    "butter", "eggs", "egg", "egg yolk", "egg white",
+
+    # Produce
+    "garlic", "onion", "red onion", "yellow onion", "white onion", "shallot",
+    "leek", "scallion", "green onion", "chive",
+    "carrot", "celery", "potato", "sweet potato", "yam", "turnip", "parsnip",
+    "tomato", "tomatoes", "cucumber", "bell pepper", "pepper", "jalapeno",
+    "mushroom", "spinach", "kale", "lettuce", "cabbage", "broccoli", "cauliflower",
+    "zucchini", "squash", "pumpkin", "asparagus", "green bean", "pea", "peas",
+    "corn", "avocado", "lemon", "lime", "orange", "grapefruit", "apple", "banana",
+    "berry", "strawberry", "blueberry", "raspberry", "blackberry", "cherry",
+    "grape", "pineapple", "mango", "peach", "pear", "plum", "apricot",
+    "celery", "parsley", "cilantro", "coriander", "dill", "basil", "mint", "thyme",
+    "rosemary", "oregano", "sage", "tarragon", "bay leaf",
+
+    # Herbs and spices
+    "ginger", "ground ginger", "cinnamon", "nutmeg", "clove", "allspice",
+    "cardamom", "cumin", "paprika", "smoked paprika", "chili powder",
+    "cayenne", "turmeric", "mustard powder", "garlic powder", "onion powder",
+    "red pepper flakes", "crushed red pepper", "oregano", "basil", "thyme",
+    "rosemary", "parsley", "coriander", "fennel", "anise", "sesame seeds",
+    "poppy seeds", "sesame oil",
+
+    # Proteins
+    "chicken", "chicken breast", "chicken thighs", "ground chicken",
+    "beef", "ground beef", "steak", "roast beef", "pork", "ground pork",
+    "bacon", "ham", "sausage", "turkey", "ground turkey",
+    "fish", "salmon", "tuna", "cod", "shrimp", "crab", "lobster",
+    "tofu", "tempeh", "seitan", "beans", "black beans", "kidney beans",
+    "chickpeas", "lentils",
+
+    # Nuts, seeds, and add-ins
+    "almonds", "walnuts", "pecans", "cashews", "peanuts", "pistachios",
+    "hazelnuts", "macadamia nuts", "sunflower seeds", "pumpkin seeds",
+    "chia seeds", "flaxseed", "sesame seeds", "raisins", "currants",
+    "coconut", "shredded coconut", "chocolate chips", "chocolate",
+    "dark chocolate", "white chocolate", "semisweet chocolate",
+
+    # Baking-specific
+    "corn syrup", "gelatin", "powdered gelatin", "molasses", "cream of tartar",
+    "yeast", "active dry yeast", "instant yeast", "self-rising flour",
+    "cake mix", "vanilla pudding", "food coloring", "sprinkles",
+
+    # Misc cooking ingredients
+    "broth", "stock", "gravy", "salad dressing", "relish", "pickle", "pickles",
+    "capers", "olives", "artichoke", "sun-dried tomatoes", "coconut milk",
+    "cream of mushroom soup", "cream of chicken soup",
+    "beer", "wine", "rum", "brandy"
 ]
 
 MEASUREMENT_UNITS = [
-    r"\bcup s?\b", r"\bc\.\b",
-    r"\btablespoon s?\b", r"\btbsp\.?\b", r"\bT\b",
-    r"\bteaspoon s?\b",  r"\btsp\.?\b",
-    r"\bounce s?\b",     r"\boz\.?\b",
-    r"\bpound s?\b",     r"\blb s?\.?\b",
-    r"\bgram s?\b",      r"\bg\b",
-    r"\bkilogram s?\b",  r"\bkg\b",
-    r"\bmilliliter s?\b",r"\bml\b",
-    r"\bliter s?\b",     r"\bl\b",
-    r"\bpinch\b",        r"\bdash\b",
-    r"\bslice s?\b",     r"\bclove s?\b",
-    r"\bcan s?\b",       r"\bpackage s?\b",
-    r"\bstick s?\b",     r"\bsprig s?\b",
+    r"\bcups?\b", r"\bc\.\b",
+    r"\btablespoons?\b", r"\btbsp\.?\b", r"(?<=\d)\s?T\b", 
+    r"\bteaspoons?\b",  r"\btsp\.?\b",
+    r"\bounces?\b",     r"\boz\.?\b",
+    r"\bpounds?\b",     r"\blbs?\.?\b",
+    r"\bgrams?\b",      r"(?<=\d)\s?g\b",
+    r"\bkilograms?\b",  r"\bkg\b",
+    r"\bmilliliters?\b",r"\bml\b",
+    r"\bliters?\b",     r"\bl\b",
+    r"\bpinch\b",       r"\bdash\b",    r"\bsmidgen\b",
+    r"\bslices?\b",     r"\bcloves?\b",
+    r"\bcans?\b",       r"\bpackages?\b", r"\benvelopes?\b",
+    r"\bsticks?\b",     r"\bsprigs?\b",
+    r"\bquarts?\b",     r"\bqt\.?\b",   r"\bpints?\b",   r"\bpt\.?\b",
+    r"\bcontainer\b",   r"\bcarton\b",  r"\bbottle\b"
 ]
 
-# Compiled once at import time
-_KW_PATTERN   = re.compile(
+_KW_PATTERN = re.compile(
     r'\b(' + '|'.join(re.escape(k) for k in RECIPE_KEYWORDS) + r')\b',
     re.IGNORECASE
 )
+
+_INGREDIENT_PATTERN = re.compile(
+    r'\b(' + '|'.join(re.escape(i) for i in COMMON_INGREDIENTS) + r')\b',
+    re.IGNORECASE
+)
+
 _UNIT_PATTERN = re.compile(
     '(' + '|'.join(MEASUREMENT_UNITS) + ')',
     re.IGNORECASE | re.VERBOSE
 )
-_FRACTION_PATTERN  = re.compile(r'\b\d+\s*/\s*\d+\b|\b\d+\.\d+\b')
-_BULLET_LINE_PATTERN = re.compile(r'^\s*[-•*]\s+\w', re.MULTILINE)
 
-# A "quantity + word" pattern: "2 eggs", "3 cloves garlic"
-_QTY_WORD_PATTERN  = re.compile(r'\b\d+\s+[a-zA-Z]')
+_FRACTION_PATTERN = re.compile(
+    r'\b\d+\s*/\s*\d+\b|\b\d+\.\d+\b|[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]',
+    re.UNICODE
+)
+
+_QTY_WORD_PATTERN = re.compile(r'\b\d+\s+[a-zA-Z]')
 
 
 def _clamp(value, lo=0.0, hi=1.0):
@@ -69,133 +134,100 @@ def _clamp(value, lo=0.0, hi=1.0):
 
 
 def score_text(text: str) -> dict:
-    """
-    Analyse `text` and return a dict with:
-        score       float   0.0–1.0
-        is_recipe   bool
-        signals     dict    breakdown of each sub-score
-    """
     if not text or not text.strip():
         return {"score": 0.0, "is_recipe": False, "signals": {}}
 
-    lines = text.splitlines()
     word_count = len(text.split())
 
-    # ── 1. Recipe keyword hits (max 0.35) ────────────────────────────────────
+    # 1. Ingredient Detection. # Each unique ingredient adds 0.04 to the score, capped at 0.30
+    # We count unique ingredient mentions to prevent things like "sugar sugar sugar" being overly influential.
+    ing_hits = len(set(_INGREDIENT_PATTERN.findall(text.lower())))
+    ing_score = _clamp(ing_hits * 0.05, 0, 0.40)
+
+    # 2. Recipe keyword hits. Each keyword adds 0.05 to the score, capped at 0.35
     kw_hits = len(_KW_PATTERN.findall(text))
-    # 1 hit = 0.12, 2 = 0.24, 3+ = 0.35
-    kw_score = _clamp(kw_hits * 0.12, 0, 0.35)
+    kw_score = _clamp(kw_hits * 0.04, 0, 0.30)
 
-    # ── 2. Measurement unit density (max 0.35) ────────────────────────────────
+    # 3. Measurement unit density
     unit_hits = len(_UNIT_PATTERN.findall(text))
-    # Normalise by word count to avoid rewarding long non-recipes
     unit_density = unit_hits / max(word_count, 1)
-    unit_score = _clamp(unit_density * 35, 0, 0.35)
+    unit_score = _clamp(unit_density * 4.0, 0, 0.20)
 
-    # ── 3. Fractions / quantities (max 0.20) ──────────────────────────────────
+    # 4. Fractions / quantities. Each fraction or quantity phrase adds 0.03 to the score, capped at 0.15
     frac_hits = len(_FRACTION_PATTERN.findall(text))
     qty_hits  = len(_QTY_WORD_PATTERN.findall(text))
-    frac_score = _clamp((frac_hits + qty_hits) * 0.04, 0, 0.20)
+    frac_score = _clamp((frac_hits + qty_hits) * 0.02, 0, 0.12)
 
-    # ── 4. Bullet / short-line list (max 0.10) ───────────────────────────────
-    bullet_hits     = len(_BULLET_LINE_PATTERN.findall(text))
-    short_lines     = sum(1 for l in lines if 3 < len(l.strip()) < 60)
-    ingredient_feel = _clamp((bullet_hits * 0.05) + (short_lines / max(len(lines), 1) * 0.10), 0, 0.10)
-
-    total = kw_score + unit_score + frac_score + ingredient_feel
-
-    signals = {
-        "keyword_hits":   kw_hits,
-        "keyword_score":  round(kw_score, 3),
-        "unit_hits":      unit_hits,
-        "unit_score":     round(unit_score, 3),
-        "fraction_hits":  frac_hits + qty_hits,
-        "fraction_score": round(frac_score, 3),
-        "bullet_hits":    bullet_hits,
-        "list_score":     round(ingredient_feel, 3),
-    }
+    total = ing_score + kw_score + unit_score + frac_score
 
     return {
-        "score":     round(_clamp(total), 4),
+        "score": round(_clamp(total), 4),
         "is_recipe": total >= RECIPE_THRESHOLD,
-        "signals":   signals,
+        "signals": {
+            "ingredient_score": round(ing_score, 3),
+            "keyword_score": round(kw_score, 3),
+            "unit_score": round(unit_score, 3),
+            "fraction_score": round(frac_score, 3),
+        }
     }
 
 
 def extract_title(text: str) -> str | None:
-    """
-    Best-effort title extraction from OCR text.
-
-    Strategy:
-    1. Reject lines that are mostly noise (symbols, single chars, low alnum ratio)
-    2. Prefer ALL-CAPS lines — recipe card titles are very often all-caps
-    3. Fall back to the first clean mixed-case line
-    4. Return None if nothing clean is found
-    """
-    # A line is "clean" if ≥60% of its characters are alphanumeric or spaces
-    def alnum_ratio(s):
-        if not s:
-            return 0
-        alnum = sum(1 for c in s if c.isalnum() or c == ' ')
-        return alnum / len(s)
-
-    # A word is "real" if it has ≥2 letters
-    def real_word_count(s):
-        return sum(1 for w in s.split() if sum(c.isalpha() for c in w) >= 2)
-
-    candidates_allcaps = []
-    candidates_normal  = []
-
-    for line in text.splitlines():
+    best_line = None
+    highest_score = -1
+    
+    for line in text.splitlines()[:12]:
         line = line.strip()
-        if not line:
+        if len(line) < 4 or len(line) > 50:
             continue
-        if len(line) > 80:
-            continue                        # too long to be a title
-        if len(line) < 4:
-            continue                        # too short, probably noise
-        if alnum_ratio(line) < 0.60:
-            continue                        # mostly symbols/garbage
-        if real_word_count(line) < 2:
-            continue                        # fewer than 2 real words
-
-        # Strip any leading noise characters (Z, * etc.) before a capital word
-        cleaned = re.sub(r'^[\W_]+', '', line).strip()
-        if not cleaned or real_word_count(cleaned) < 2:
+            
+        letters = [c for c in line if c.isalpha()]
+        if not letters:
             continue
+            
+        caps_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
+        current_score = caps_ratio
 
-        if cleaned == cleaned.upper() and any(c.isalpha() for c in cleaned):
-            candidates_allcaps.append(cleaned)
-        else:
-            candidates_normal.append(cleaned)
-
-    if candidates_allcaps:
-        return candidates_allcaps[0]
-    if candidates_normal:
-        return candidates_normal[0]
-    return None
+        if current_score > highest_score:
+            highest_score = current_score
+            best_line = line
+            
+    return best_line
 
 
 if __name__ == "__main__":
-    # Quick smoke-test
-    sample = """
-    Chocolate Chip Cookies
+    samples = [
+        """
+Favorite Double Chocolate Chip Cookies Recipe
 
-    Ingredients:
-    - 2 1/4 cups all-purpose flour
-    - 1 tsp baking soda
-    - 1 tsp salt
-    - 1 cup (2 sticks) butter, softened
-    - 3/4 cup granulated sugar
+1/2 cup (8 Tbsp; 113g) unsalted butter, softened to room temperature
+1/2 cup (100g) granulated sugar
+1/2 cup (100g) packed light or dark brown sugar
+1 large egg, at room temperature
+1 teaspoon pure vanilla extract
+1 cup (125g) all-purpose flour (spooned & leveled)
+2/3 cup (55g) natural unsweetened cocoa powder
+1 teaspoon baking soda
+1/8 teaspoon salt
+1 Tablespoon (15ml) milk (any kind, dairy or non)
+1 and 1/4 cups (225g) semi-sweet chocolate chips, plus a few more for optional topping*
 
-    Directions:
-    1. Preheat oven to 375°F.
-    2. Combine flour, baking soda and salt in a bowl.
-    3. Mix butter and sugars until creamy.
-    4. Bake for 9–11 minutes.
-    """
-    result = score_text(sample)
-    print(f"Score:     {result['score']}")
-    print(f"Is recipe: {result['is_recipe']}")
-    print(f"Signals:   {result['signals']}")
-    print(f"Title:     {extract_title(sample)}")
+Instructions:
+Preliminary note: This cookie dough requires at least 3 hours of chilling, but I prefer to chill the dough overnight. The colder the dough, the thicker the cookies.
+In a large bowl using a hand-held or stand mixer fitted with a paddle attachment, beat the butter, granulated sugar, and brown sugar together on medium high speed until fluffy and light in color, about 3 minutes. (Here’s a helpful tutorial if you need guidance on how to cream butter and sugar.) Add the egg and vanilla extract, and then beat on high speed until combined. Scrape down the sides and bottom of the bowl as needed.
+In a separate bowl, whisk the flour, cocoa powder, baking soda and salt together until combined. With the mixer running on low speed, slowly pour into the wet ingredients. Beat on low until combined. The cookie dough will be quite thick. Switch to high speed and beat in the milk, then the chocolate chips. The cookie dough will be sticky and tacky. Cover dough tightly and chill in the refrigerator for at least 3 hours and up to 3 days. Chilling is mandatory for this sticky cookie dough.
+Remove cookie dough from the refrigerator and allow to sit at room temperature for 10 minutes. If the cookie dough chilled longer than 3 hours, let it sit at room temperature for about 20 minutes. This makes the chilled cookie dough easier to scoop and roll.
+Preheat oven to 350°F (177°C). Line large baking sheets with parchment paper or silicone baking mats. (Always recommended for cookies.) Set aside.
+Scoop and roll dough, a heaping 1.5 Tablespoons (about 35-40g; I like to use this medium cookie scoop) in size, into balls. To ensure a thicker cookie, make the balls taller than they are wide (almost like a cylinder or column). Arrange 2-3 inches apart on the baking sheets. The cookie dough is certainly sticky, so wipe your hands clean after every few balls of dough you shape.
+Bake the cookies for 11-12 minutes or until the edges appear set and the centers still look soft. Tip: If they aren’t really spreading by minute 9, remove them from the oven and lightly bang the baking sheet on the counter 2-3x. This helps initiate that spread. Return to the oven to continue baking.
+Cool cookies for 5 minutes on the baking sheet. During this time, I like to press a few more chocolate chips into the tops of the warm cookies. (This is optional and only for looks.) Transfer to cooling rack to cool completely. The cookies will slightly deflate as they cool. 
+Cover leftover cookies tightly and store at room temperature for up to 1 week.
+"""
+    ]
+
+    for sample in samples:
+        result = score_text(sample)
+        print(f"Score:     {result['score']}")
+        print(f"Is recipe: {result['is_recipe']}")
+        print(f"Signals:   {result['signals']}")
+        print(f"Title:     {extract_title(sample)}")
