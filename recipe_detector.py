@@ -1,4 +1,5 @@
 import re
+import unicodedata
 
 # ── Tuneable threshold ────────────────────────────────────────────────────────
 RECIPE_THRESHOLD = 0.60 
@@ -81,12 +82,19 @@ COMMON_INGREDIENTS = [
     "yeast", "active dry yeast", "instant yeast", "self-rising flour",
     "cake mix", "vanilla pudding", "food coloring", "sprinkles",
 
+    # Spirits & Cocktail ingredients
+    "tequila", "vodka", "gin", "whiskey", "bourbon", "scotch",
+    "triple sec", "cointreau", "vermouth", "prosecco", "champagne",
+    "coffee liqueur", "amaretto", "bitters", "espresso",
+    "lemon juice", "lime juice", "orange juice",
+
     # Misc cooking ingredients
     "broth", "stock", "gravy", "salad dressing", "relish", "pickle", "pickles",
     "capers", "olives", "artichoke", "sun-dried tomatoes", "coconut milk",
     "cream of mushroom soup", "cream of chicken soup",
     "beer", "wine", "rum", "brandy"
 ]
+COMMON_INGREDIENTS = list(set(COMMON_INGREDIENTS)) # deduplicate
 
 MEASUREMENT_UNITS = [
     r"\bcups?\b", r"\bc\.\b",
@@ -111,10 +119,6 @@ _KW_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-_INGREDIENT_PATTERN = re.compile(
-    r'\b(' + '|'.join(re.escape(i) for i in COMMON_INGREDIENTS) + r')\b',
-    re.IGNORECASE
-)
 
 _UNIT_PATTERN = re.compile(
     '(' + '|'.join(MEASUREMENT_UNITS) + ')',
@@ -129,6 +133,47 @@ _FRACTION_PATTERN = re.compile(
 _QTY_WORD_PATTERN = re.compile(r'\b\d+\s+[a-zA-Z]')
 
 
+def _normalize_text(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[-–—]", " ", text)   # normalize hyphens/dashes → space
+    text = re.sub(r"\s+", " ", text)     # collapse whitespace
+    return text.strip()
+
+
+def _ingredient_to_pattern(ingredient: str) -> str:
+    parts = ingredient.strip().split()
+    
+    # flexible spacing
+    base = r'\s+'.join(re.escape(p) for p in parts)
+    
+    # simple plural
+    plural = base + r's?'
+    
+    # lightweight irregulars
+    irregular_map = {
+        "tomato": "tomatoes?",
+        "potato": "potatoes?",
+        "leaf": "leaves?",
+        "loaf": "loaves?",
+    }
+    
+    last = parts[-1]
+    
+    if last in irregular_map:
+        irregular = r'\s+'.join(
+            [re.escape(p) for p in parts[:-1]] + [irregular_map[last]]
+        )
+        return f"(?:{plural}|{irregular})"
+    
+    return plural
+
+
+_INGREDIENT_PATTERN = re.compile(
+    r'\b(' + '|'.join(_ingredient_to_pattern(i) for i in COMMON_INGREDIENTS) + r')\b',
+    re.IGNORECASE
+)
+
+
 def _clamp(value, lo=0.0, hi=1.0):
     return max(lo, min(hi, value))
 
@@ -137,11 +182,12 @@ def score_text(text: str) -> dict:
     if not text or not text.strip():
         return {"score": 0.0, "is_recipe": False, "signals": {}}
 
+    text = _normalize_text(text)
     word_count = len(text.split())
 
     # 1. Ingredient Detection. # Each unique ingredient adds 0.04 to the score, capped at 0.30
     # We count unique ingredient mentions to prevent things like "sugar sugar sugar" being overly influential.
-    ing_hits = len(set(_INGREDIENT_PATTERN.findall(text.lower())))
+    ing_hits = len(set(_INGREDIENT_PATTERN.findall(text)))
     ing_score = _clamp(ing_hits * 0.05, 0, 0.40)
 
     # 2. Recipe keyword hits. Each keyword adds 0.05 to the score, capped at 0.35
