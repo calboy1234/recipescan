@@ -1,8 +1,19 @@
 """
 init_db.py — RecipeScan database initialisation
 
-Runs automatically on container start. Safe to re-run on an existing
-database — uses CREATE TABLE IF NOT EXISTS and ALTER TABLE migrations.
+Safe to re-run on an existing database.
+Uses CREATE TABLE IF NOT EXISTS + ALTER TABLE migrations so existing data
+is never destroyed.
+
+New in v2:
+  - failed_images  : tracks every image that errored, enabling targeted retry
+  - ocr_runs.total / current_count : enables live progress bars
+  - ocr_runs.options : JSON blob of per-run configuration
+  - ocr_runs status values: 'running' | 'complete' | 'error' | 'stopped' | 'interrupted'
+  - Composite index on ocr_log_lines(run_id, id) for fast SSE streaming
+  - Additional default settings: worker_count, batch_size, log_retention_runs, commit_every
+  - Stale-run recovery: any row left as 'running' on startup is marked 'interrupted'
+  - PRAGMA optimize for long-running deployments
 """
 
 import os
@@ -13,7 +24,11 @@ DB_PATH = os.environ.get("DB_PATH", "/data/database/recipescan.db")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 conn = sqlite3.connect(DB_PATH)
-cur  = conn.cursor()
+conn.execute("PRAGMA journal_mode=WAL")
+conn.execute("PRAGMA foreign_keys = ON")
+cur = conn.cursor()
+
+# ── Core tables ────────────────────────────────────────────────────────────────
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS images (
@@ -49,13 +64,16 @@ CREATE TABLE IF NOT EXISTS settings (
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS ocr_runs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    started_at  TEXT DEFAULT CURRENT_TIMESTAMP,
-    finished_at TEXT,
-    processed   INTEGER DEFAULT 0,
-    skipped     INTEGER DEFAULT 0,
-    errors      INTEGER DEFAULT 0,
-    status      TEXT DEFAULT 'running'
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    finished_at   TEXT,
+    processed     INTEGER DEFAULT 0,
+    skipped       INTEGER DEFAULT 0,
+    errors        INTEGER DEFAULT 0,
+    total         INTEGER DEFAULT 0,
+    current_count INTEGER DEFAULT 0,
+    status        TEXT DEFAULT 'running',
+    options       TEXT DEFAULT '{}'
 )
 """)
 
@@ -69,24 +87,91 @@ CREATE TABLE IF NOT EXISTS ocr_log_lines (
 )
 """)
 
-# ── Migrations for existing databases ─────────────────────────────────────────
+# ── New in v2: failed image tracking ──────────────────────────────────────────
+#
+# Every image that raises an exception during OCR is recorded here.
+# The admin UI can trigger a "retry errors" run that re-queues these images,
+# bypassing the normal hash-based skip logic so they get a second attempt.
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS failed_images (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id     INTEGER NOT NULL,
+    file_path  TEXT NOT NULL,
+    file_hash  TEXT,
+    error_msg  TEXT,
+    retried    INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES ocr_runs(id)
+)
+""")
+
+# ── Migrations: add columns that may be missing in older installs ──────────────
+
 _img_cols = {row[1] for row in cur.execute("PRAGMA table_info(images)").fetchall()}
 if "is_reviewed" not in _img_cols:
     cur.execute("ALTER TABLE images ADD COLUMN is_reviewed INTEGER DEFAULT 0")
-    print("Migration: added 'is_reviewed' column to images.")
+    print("Migration: added 'is_reviewed' to images.")
 
-# ── Indexes ───────────────────────────────────────────────────────────────────
-cur.execute("CREATE INDEX IF NOT EXISTS idx_ocr_image_id  ON ocr_results(image_id)")
-cur.execute("CREATE INDEX IF NOT EXISTS idx_ocr_score     ON ocr_results(recipe_score)")
-cur.execute("CREATE INDEX IF NOT EXISTS idx_img_reviewed  ON images(is_reviewed)")
+_run_cols = {row[1] for row in cur.execute("PRAGMA table_info(ocr_runs)").fetchall()}
+if "total" not in _run_cols:
+    cur.execute("ALTER TABLE ocr_runs ADD COLUMN total INTEGER DEFAULT 0")
+    print("Migration: added 'total' to ocr_runs.")
+if "current_count" not in _run_cols:
+    cur.execute("ALTER TABLE ocr_runs ADD COLUMN current_count INTEGER DEFAULT 0")
+    print("Migration: added 'current_count' to ocr_runs.")
+if "options" not in _run_cols:
+    cur.execute("ALTER TABLE ocr_runs ADD COLUMN options TEXT DEFAULT '{}'")
+    print("Migration: added 'options' to ocr_runs.")
 
-# ── Default settings ──────────────────────────────────────────────────────────
+# ── Indexes ────────────────────────────────────────────────────────────────────
+
+cur.execute("CREATE INDEX IF NOT EXISTS idx_ocr_image_id   ON ocr_results(image_id)")
+cur.execute("CREATE INDEX IF NOT EXISTS idx_ocr_score      ON ocr_results(recipe_score)")
+cur.execute("CREATE INDEX IF NOT EXISTS idx_img_reviewed   ON images(is_reviewed)")
+cur.execute("CREATE INDEX IF NOT EXISTS idx_img_hash       ON images(file_hash)")
+
+# Composite index: critical for SSE streaming (WHERE run_id=? AND id>?)
+cur.execute("CREATE INDEX IF NOT EXISTS idx_log_run_id     ON ocr_log_lines(run_id, id)")
+
+cur.execute("CREATE INDEX IF NOT EXISTS idx_failed_run     ON failed_images(run_id)")
+cur.execute("CREATE INDEX IF NOT EXISTS idx_failed_retried ON failed_images(retried)")
+
+# ── Default settings ───────────────────────────────────────────────────────────
+
 cur.executemany(
     "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
     [
-        ("recipe_threshold", "0.75"),
+        ("recipe_threshold",    "0.75"),
+        # Number of parallel OCR threads.
+        ("worker_count",        "4"),
+        # Max futures submitted at once. Caps memory usage at scale.
+        # 200 futures × ~a few MB each = well under 1 GB for large runs.
+        ("batch_size",          "200"),
+        # Commit to SQLite every N completions (lower = safer, higher = faster).
+        ("commit_every",        "50"),
+        # Only keep log lines for the last N completed runs; older ones are pruned.
+        ("log_retention_runs",  "10"),
     ]
 )
+
+# ── Stale-run recovery ─────────────────────────────────────────────────────────
+#
+# If the container was killed or crashed mid-run, the ocr_runs row is left
+# as 'running'. Detect and mark those as 'interrupted' on every startup so
+# the UI never shows a phantom running state and users know to retry.
+
+interrupted = cur.execute(
+    "UPDATE ocr_runs "
+    "SET status='interrupted', finished_at=CURRENT_TIMESTAMP "
+    "WHERE status='running'"
+).rowcount
+if interrupted:
+    print(f"Recovery: marked {interrupted} stale run(s) as 'interrupted'.")
+
+# ── DB maintenance ─────────────────────────────────────────────────────────────
+
+conn.execute("PRAGMA optimize")
 
 conn.commit()
 conn.close()
