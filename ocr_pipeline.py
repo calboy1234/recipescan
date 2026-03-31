@@ -106,13 +106,15 @@ PHOTO_DIR  = "/photos"
 DB_PATH    = "/data/database/recipescan.db"
 VALID_EXTS = (".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp")
 
-DEFAULT_THRESHOLD    = 0.60
-DEFAULT_WORKERS      = 2
-DEFAULT_BATCH_SIZE   = 50
+DEFAULT_THRESHOLD    = 0.75
+DEFAULT_WORKERS      = 4
+DEFAULT_BATCH_SIZE   = 200
 DEFAULT_COMMIT_EVERY = 50
 DEFAULT_LOG_KEEP     = 10
 
 OSD_MIN_CONFIDENCE = 2.0
+OSD_TIMEOUT = 10   # seconds before OSD is abandoned and rotation skipped
+OCR_TIMEOUT = 60   # seconds before an OCR call is killed and the image errors
 
 
 # ── Settings helpers ───────────────────────────────────────────────────────────
@@ -152,7 +154,8 @@ def fmt_size(b: int) -> str:
 
 def detect_rotation(img: PILImage.Image) -> tuple[int, float]:
     try:
-        osd = pytesseract.image_to_osd(img, config="--psm 0 --dpi 150")
+        osd = pytesseract.image_to_osd(img, config="--psm 0 --dpi 150",
+                                       timeout=OSD_TIMEOUT)
         angle_match = re.search(r"Orientation in degrees:\s*(\d+)", osd)
         conf_match  = re.search(r"Orientation confidence:\s*([\d.]+)", osd)
         if not angle_match or not conf_match:
@@ -243,7 +246,8 @@ def detect_column_split(img: PILImage.Image) -> bool:
 
 def ocr_region(img: PILImage.Image, psm: int) -> str:
     """Run Tesseract on a single PIL image region with the given PSM."""
-    return pytesseract.image_to_string(img, config=f"--psm {psm}")
+    return pytesseract.image_to_string(img, config=f"--psm {psm}",
+                                       timeout=OCR_TIMEOUT)
 
 
 def run_ocr(path: str, lines: list) -> tuple[str, int, float]:
@@ -372,6 +376,16 @@ def ocr_image(path: str, file_hash: str, threshold: float) -> dict:
         lines.append(f"└─ done in {result['ocr_time']:.1f}s")
         result["status"] = "ok"
 
+    except pytesseract.TesseractError as exc:
+        msg = str(exc)
+        result["error_msg"] = msg
+        if "Tesseract run timed out" in msg or "TimeoutExpired" in msg:
+            lines.append(f"  [timeout] : Tesseract did not finish within the allowed time")
+            lines.append(f"  [timeout] : image will be recorded as a failure for later retry")
+        else:
+            lines.append(f"  [error]   : tesseract — {exc}")
+        lines.append(f"└─ failed")
+
     except Exception as exc:
         result["error_msg"] = str(exc)
         lines.append(f"  [error]   : {exc}")
@@ -490,17 +504,27 @@ def main(
     log_keep     = _get_setting(conn, "log_retention_runs", DEFAULT_LOG_KEEP)
 
     # ── Log helper (persists lines if run_id given) ────────────────────────────
-    log_conn = sqlite3.connect(DB_PATH) if run_id else None
+    #
+    # Uses the same connection (conn) as all other DB writes rather than a
+    # separate log_conn.  A second connection creates write-lock contention:
+    # conn holds an open uncommitted write transaction across commit_every
+    # images, and WAL mode only allows one writer at a time.  log_conn would
+    # block for up to the sqlite3 busy-timeout (5 s default) on every INSERT,
+    # stalling the main thread and preventing it from collecting completed
+    # futures via wait().  A single connection eliminates the contention.
+    #
+    # Log lines are NOT committed inside log_db — they are flushed by the
+    # explicit conn.commit() that immediately follows each image's log block
+    # in the main loop below, giving the web UI near-real-time updates.
 
     def log_db(line: str):
         log(line)
-        if run_id and log_conn:
+        if run_id:
             try:
-                log_conn.execute(
+                conn.execute(
                     "INSERT INTO ocr_log_lines (run_id, line) VALUES (?, ?)",
                     (run_id, line)
                 )
-                log_conn.commit()
             except Exception:
                 pass
 
@@ -644,6 +668,11 @@ def main(
 
                     for line in result["lines"]:
                         log_db(line)
+                    # Flush log lines to the DB immediately so the web UI
+                    # SSE stream can read them without waiting for the next
+                    # commit_every boundary.  This commit is cheap (log-only
+                    # rows) and replaces the old log_conn-per-line commits.
+                    conn.commit()
 
                     outcome = write_result(cur, result)
 
@@ -729,12 +758,6 @@ def main(
         prune_conn.close()
     except Exception:
         pass
-
-    if log_conn:
-        try:
-            log_conn.close()
-        except Exception:
-            pass
 
     log("__DONE__")
     return {"processed": processed, "skipped": skipped, "errors": errors}
