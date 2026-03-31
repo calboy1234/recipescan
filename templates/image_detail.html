@@ -23,7 +23,39 @@
            onerror="this.replaceWith(document.createTextNode('Image file not found'))" />
     </div>
 
-    <p class="muted" style="margin-bottom:.85rem;">Added {{ img['added_at'] }}</p>
+    <!-- Image stats panel -->
+    <div class="card" style="padding:.75rem 1rem; margin-bottom:.85rem; font-family:sans-serif; font-size:.8rem;">
+      <table style="width:100%; border-collapse:collapse;">
+        {% set meta_rows = [
+          ('Full path',  img['file_path']),
+          ('Added',      img['added_at']),
+          ('File size',  file_stat.get('size_human', '—')),
+          ('Dimensions', file_stat.get('dimensions', '—')),
+          ('Format',     file_stat.get('format', '—')),
+        ] %}
+        {% for label, val in meta_rows %}
+        <tr style="{{ 'border-top:1px solid var(--border);' if not loop.first }}">
+          <td style="padding:.28rem .5rem .28rem 0; color:var(--muted); white-space:nowrap; width:30%;">{{ label }}</td>
+          <td style="padding:.28rem 0; word-break:break-all;">{{ val }}</td>
+        </tr>
+        {% endfor %}
+        {% if ocr %}
+        {% set o = ocr[0] %}
+        {% set angle = o['rotation_corrected'] %}
+        {% for label, val in [
+          ('Rotation corrected', (angle|string + '°') if angle else 'None'),
+          ('OSD confidence',     (o['confidence'] + ' / 100') if o['confidence'] and o['confidence'] != '0.0' else '—'),
+          ('Scanned',            o['created_at']),
+          ('OCR engine',         o['engine'] | title),
+        ] %}
+        <tr style="border-top:1px solid var(--border);">
+          <td style="padding:.28rem .5rem .28rem 0; color:var(--muted); white-space:nowrap;">{{ label }}</td>
+          <td style="padding:.28rem 0;">{{ val }}</td>
+        </tr>
+        {% endfor %}
+        {% endif %}
+      </table>
+    </div>
 
     <!-- Reviewed toggle -->
     <form action="/image/{{ img['id'] }}/review" method="post">

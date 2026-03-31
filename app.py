@@ -60,6 +60,18 @@ _GALLERY_FILTERS: dict[str, tuple[str, list]] = {
     ),
 }
 
+# Validated sort options — values are injected directly into ORDER BY so they
+# must be hardcoded here; they are never derived from user input.
+_SORT_OPTIONS: dict[str, str] = {
+    "date_desc":  "img.added_at DESC",
+    "date_asc":   "img.added_at ASC",
+    "score_desc": "ocr.recipe_score DESC NULLS LAST",
+    "score_asc":  "ocr.recipe_score ASC NULLS LAST",
+    "name_asc":   "img.file_path ASC",
+    "name_desc":  "img.file_path DESC",
+}
+_DEFAULT_SORT = "date_desc"
+
 # ── Global pipeline state ──────────────────────────────────────────────────────
 
 ocr_lock       = threading.Lock()
@@ -101,15 +113,19 @@ def index():
     threshold  = get_threshold()
     page       = request.args.get("page", 1, type=int)
     filter_val = request.args.get("filter", "all")
+    sort_val   = request.args.get("sort", _DEFAULT_SORT)
 
-    # Validate filter_val against the known safe set; unknown → "all"
+    # Validate both against known safe sets
     if filter_val not in _GALLERY_FILTERS:
         filter_val = "all"
+    if sort_val not in _SORT_OPTIONS:
+        sort_val = _DEFAULT_SORT
 
     where_clause, params = _GALLERY_FILTERS[filter_val]
-    # Filters that need the threshold inject it here (params is None as sentinel)
     if params is None:
         params = [threshold]
+
+    order_by = _SORT_OPTIONS[sort_val]   # safe: hardcoded strings only
 
     conn = get_db()
 
@@ -130,7 +146,7 @@ def index():
         "FROM images img "
         "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
         "WHERE " + where_clause + " "
-        "ORDER BY img.added_at DESC "
+        "ORDER BY " + order_by + " "
         "LIMIT ? OFFSET ?",
         params + [ITEMS_PER_PAGE, offset],
     ).fetchall()
@@ -139,7 +155,7 @@ def index():
     return render_template(
         "index.html",
         rows=rows, total=total, page=page, total_pages=total_pages,
-        filter_val=filter_val, threshold=threshold,
+        filter_val=filter_val, sort_val=sort_val, threshold=threshold,
     )
 
 
@@ -157,7 +173,32 @@ def image_detail(image_id):
         (image_id,),
     ).fetchall()
     conn.close()
-    return render_template("image_detail.html", img=img, ocr=ocr, threshold=threshold)
+
+    # Read file stats from disk for the detail panel (not stored in DB)
+    file_path = img["file_path"]
+    file_stat = {}
+    if os.path.exists(file_path):
+        try:
+            stat = os.stat(file_path)
+            file_stat["size_bytes"] = stat.st_size
+            size_kb = stat.st_size / 1024
+            file_stat["size_human"] = (
+                f"{size_kb / 1024:.1f} MB" if size_kb >= 1024 else f"{size_kb:.0f} KB"
+            )
+        except OSError:
+            pass
+        try:
+            from PIL import Image as _PIL
+            with _PIL.open(file_path) as probe:
+                file_stat["dimensions"] = f"{probe.width} × {probe.height} px"
+                file_stat["format"]     = probe.format or "unknown"
+        except Exception:
+            pass
+
+    return render_template(
+        "image_detail.html",
+        img=img, ocr=ocr, threshold=threshold, file_stat=file_stat,
+    )
 
 
 @app.route("/photo/<int:image_id>")
@@ -205,37 +246,37 @@ def toggle_review(image_id):
 
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
+    # GET: redirect old bookmarks to wherever settings now live
+    if request.method == "GET":
+        return redirect(url_for("admin"))
+
     conn = get_db()
-    if request.method == "POST":
-        updates = {}
+    updates = {}
 
-        threshold = request.form.get("recipe_threshold", "0.60")
+    threshold = request.form.get("recipe_threshold", "0.60")
+    try:
+        updates["recipe_threshold"] = str(max(0.0, min(1.0, float(threshold))))
+    except ValueError:
+        updates["recipe_threshold"] = "0.60"
+
+    for key, default in [("worker_count", "2"), ("batch_size", "200"),
+                          ("commit_every", "50"), ("log_retention_runs", "10")]:
+        val = request.form.get(key, default)
         try:
-            updates["recipe_threshold"] = str(max(0.0, min(1.0, float(threshold))))
+            updates[key] = str(max(1, int(val)))
         except ValueError:
-            updates["recipe_threshold"] = "0.60"
+            updates[key] = default
 
-        for key, default in [("worker_count", "4"), ("batch_size", "200"),
-                              ("commit_every", "50"), ("log_retention_runs", "10")]:
-            val = request.form.get(key, default)
-            try:
-                updates[key] = str(max(1, int(val)))
-            except ValueError:
-                updates[key] = default
-
-        for k, v in updates.items():
-            conn.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, v)
-            )
-        conn.commit()
-        conn.close()
-        return redirect(url_for("settings"))
-
-    rows = conn.execute("SELECT key, value FROM settings ORDER BY key").fetchall()
+    for k, v in updates.items():
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, v)
+        )
+    conn.commit()
     conn.close()
-    settings_dict = {r["key"]: r["value"] for r in rows}
-    return render_template("settings.html", settings=settings_dict,
-                           threshold=settings_dict.get("recipe_threshold", "0.60"))
+
+    # return_to lets each form redirect back to the page it came from
+    return_to = request.form.get("return_to", "admin")
+    return redirect(url_for("index") if return_to == "index" else url_for("admin"))
 
 
 # ── Admin: dashboard ───────────────────────────────────────────────────────────
@@ -278,12 +319,15 @@ def admin():
         ).fetchall()
         last_log = [r["line"] for r in log_rows]
 
+    settings_rows = conn.execute("SELECT key, value FROM settings ORDER BY key").fetchall()
+    settings_dict = {r["key"]: r["value"] for r in settings_rows}
     conn.close()
     return render_template(
         "admin.html",
         stats=stats, runs=runs, last_run=last_run,
         last_log=last_log, ocr_running=ocr_running,
         ocr_run_id=ocr_run_id,
+        settings=settings_dict, threshold=threshold,
     )
 
 

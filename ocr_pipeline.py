@@ -348,7 +348,7 @@ def ocr_image(path: str, file_hash: str, threshold: float) -> dict:
     lines  = []
     result = {
         "path": path, "status": "error", "lines": lines,
-        "file_hash": file_hash, "text": "", "angle": 0,
+        "file_hash": file_hash, "text": "", "angle": 0, "osd_confidence": 0.0,
         "recipe_score": 0.0, "signals": {},
         "file_size": 0, "dimensions": "unknown",
         "ocr_time": 0.0, "error_msg": "",
@@ -370,9 +370,10 @@ def ocr_image(path: str, file_hash: str, threshold: float) -> dict:
 
         t0 = time.time()
         text, angle, confidence = run_ocr(path, lines)
-        result["ocr_time"] = time.time() - t0
-        result["text"]  = text
-        result["angle"] = angle
+        result["ocr_time"]       = time.time() - t0
+        result["text"]           = text
+        result["angle"]          = angle
+        result["osd_confidence"] = confidence
 
         lines.append(f"  ocr time  : {result['ocr_time']:.1f}s")
 
@@ -436,7 +437,8 @@ def write_result(cur: sqlite3.Cursor, result: dict) -> str:
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            image_id, "tesseract", result["text"], "unknown",
+            image_id, "tesseract", result["text"],
+            str(round(result.get("osd_confidence", 0.0), 2)),
             result["recipe_score"], json.dumps(result["signals"]),
             result["angle"],
         ),

@@ -2,12 +2,65 @@
 {% block title %}Images — RecipeScan{% endblock %}
 
 {% block content %}
-<div class="gap" style="margin-bottom:1rem;">
-  <h1 style="margin:0;">Image Library</h1>
-  <span class="muted">{{ total }} image{{ 's' if total != 1 }}</span>
+
+<!-- ── Threshold bar (inline, saves to /settings with return_to=index) ── -->
+<form action="/settings" method="post" id="threshold-form"
+      style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+             box-shadow:var(--shadow); padding:.65rem 1rem; margin-bottom:1rem;
+             display:flex; align-items:center; gap:1rem; flex-wrap:wrap; font-family:sans-serif;">
+  <input type="hidden" name="return_to" value="index" />
+  <label for="threshold-slider" style="font-size:.82rem; font-weight:600; margin:0; white-space:nowrap;">
+    Recipe threshold:
+  </label>
+  <input type="range" id="threshold-slider" min="0" max="100" step="5"
+         value="{{ (threshold|float * 100)|round|int }}"
+         style="flex:1; min-width:140px; accent-color:var(--accent);"
+         oninput="
+           document.getElementById('thr-label').textContent = this.value + '%';
+           document.getElementById('recipe_threshold').value = (this.value/100).toFixed(2);
+         " />
+  <span id="thr-label" style="font-weight:700; min-width:2.8rem; color:var(--accent);">
+    {{ (threshold|float * 100)|round|int }}%
+  </span>
+  <input type="hidden" id="recipe_threshold" name="recipe_threshold" value="{{ threshold }}" />
+  <button type="submit" class="btn btn-primary" style="padding:.3rem .8rem; font-size:.82rem;">Save</button>
+  <span class="muted" style="font-size:.76rem;">
+    Images at or above this score are flagged as recipes.
+  </span>
+</form>
+
+<!-- ── Header row: title + sort ── -->
+<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.6rem; margin-bottom:.85rem;">
+  <div style="display:flex; align-items:baseline; gap:.75rem;">
+    <h1 style="margin:0;">Image Library</h1>
+    <span class="muted">{{ total }} image{{ 's' if total != 1 }}</span>
+  </div>
+
+  <!-- Sort control -->
+  <div style="display:flex; align-items:center; gap:.4rem; font-family:sans-serif; font-size:.83rem;">
+    <span class="muted">Sort:</span>
+    {% set sorts = [
+      ('date_desc',  'Newest first'),
+      ('date_asc',   'Oldest first'),
+      ('score_desc', 'Highest score'),
+      ('score_asc',  'Lowest score'),
+      ('name_asc',   'Name A–Z'),
+      ('name_desc',  'Name Z–A'),
+    ] %}
+    {% for val, label in sorts %}
+      <a href="/?filter={{ filter_val }}&sort={{ val }}"
+         style="padding:.22rem .6rem; border-radius:999px; border:1px solid var(--border);
+                text-decoration:none; color:{{ 'var(--surface)' if sort_val == val else 'var(--text)' }};
+                background:{{ 'var(--accent)' if sort_val == val else 'transparent' }};
+                border-color:{{ 'var(--accent)' if sort_val == val else 'var(--border)' }};">
+        {{ label }}
+      </a>
+    {% endfor %}
+  </div>
 </div>
 
-<div class="filters">
+<!-- ── Filter tabs ── -->
+<div class="filters" style="margin-bottom:1.1rem;">
   {% set filters = [
     ('all',       'All'),
     ('unreviewed','⚑ Unreviewed Detected'),
@@ -16,7 +69,7 @@
     ('unscanned', 'Not Yet Scanned'),
   ] %}
   {% for val, label in filters %}
-    <a href="/?filter={{ val }}" class="{{ 'active' if filter_val == val }}">{{ label }}</a>
+    <a href="/?filter={{ val }}&sort={{ sort_val }}" class="{{ 'active' if filter_val == val }}">{{ label }}</a>
   {% endfor %}
 </div>
 
@@ -47,6 +100,7 @@
             <span class="muted" style="font-size:.72rem;">{{ "%.0f"|format((row['recipe_score'] or 0)*100) }}%</span>
           {% else %}
             <span class="badge badge-grey">Not a recipe</span>
+            <span class="muted" style="font-size:.72rem;">{{ "%.0f"|format((row['recipe_score'] or 0)*100) }}%</span>
           {% endif %}
         </div>
 
@@ -70,19 +124,19 @@
 {% if total_pages > 1 %}
 <div class="pagination">
   {% if page > 1 %}
-    <a href="/?page={{ page-1 }}&filter={{ filter_val }}">← Prev</a>
+    <a href="/?page={{ page-1 }}&filter={{ filter_val }}&sort={{ sort_val }}">← Prev</a>
   {% endif %}
   {% for p in range(1, total_pages+1) %}
     {% if p == page %}
       <span class="active">{{ p }}</span>
     {% elif p <= 3 or p >= total_pages-2 or (p >= page-2 and p <= page+2) %}
-      <a href="/?page={{ p }}&filter={{ filter_val }}">{{ p }}</a>
+      <a href="/?page={{ p }}&filter={{ filter_val }}&sort={{ sort_val }}">{{ p }}</a>
     {% elif p == 4 or p == total_pages-3 %}
       <span>…</span>
     {% endif %}
   {% endfor %}
   {% if page < total_pages %}
-    <a href="/?page={{ page+1 }}&filter={{ filter_val }}">Next →</a>
+    <a href="/?page={{ page+1 }}&filter={{ filter_val }}&sort={{ sort_val }}">Next →</a>
   {% endif %}
 </div>
 {% endif %}
@@ -100,12 +154,10 @@ async function toggleReview(imageId, btn) {
     const data = await res.json();
     const reviewed = data.is_reviewed === 1;
 
-    // Update button
     btn.textContent = reviewed ? "✓" : "○";
     btn.className   = "btn " + (reviewed ? "btn-reviewed" : "btn-not-reviewed");
     btn.title       = reviewed ? "Mark as unreviewed" : "Mark as reviewed";
 
-    // Update dot
     const dot = document.getElementById(`dot-${imageId}`);
     if (dot) {
       dot.classList.toggle("is-reviewed", reviewed);

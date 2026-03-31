@@ -20,6 +20,53 @@
   {% endfor %}
 </div>
 
+<!-- ── Pipeline Settings ── -->
+<div class="card" style="margin-bottom:1.25rem;">
+  <h2 style="margin-bottom:.5rem;">Pipeline Settings</h2>
+  <p class="muted" style="margin-bottom:1.25rem;">
+    These defaults are used for every OCR run. Changes take effect on the next run.
+  </p>
+  <form action="/settings" method="post">
+    <input type="hidden" name="return_to" value="admin" />
+    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:1rem 1.5rem; margin-bottom:1.25rem;">
+
+      <div>
+        <label for="s-workers" style="display:block; font-size:.82rem; font-weight:600; margin-bottom:.2rem;">Worker threads</label>
+        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">Images processed in parallel. Start with your CPU core count.</p>
+        <input type="number" id="s-workers" name="worker_count" min="1" max="32"
+               value="{{ settings.get('worker_count', '2') }}"
+               style="width:7rem; padding:.35rem .5rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.9rem;" />
+      </div>
+
+      <div>
+        <label for="s-batch" style="display:block; font-size:.82rem; font-weight:600; margin-bottom:.2rem;">Batch size</label>
+        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">Max futures in-flight at once. Caps memory on large libraries.</p>
+        <input type="number" id="s-batch" name="batch_size" min="1" max="10000"
+               value="{{ settings.get('batch_size', '200') }}"
+               style="width:7rem; padding:.35rem .5rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.9rem;" />
+      </div>
+
+      <div>
+        <label for="s-commit" style="display:block; font-size:.82rem; font-weight:600; margin-bottom:.2rem;">Commit every N images</label>
+        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">Lower = safer on crash, higher = faster writes.</p>
+        <input type="number" id="s-commit" name="commit_every" min="1" max="1000"
+               value="{{ settings.get('commit_every', '50') }}"
+               style="width:7rem; padding:.35rem .5rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.9rem;" />
+      </div>
+
+      <div>
+        <label for="s-logkeep" style="display:block; font-size:.82rem; font-weight:600; margin-bottom:.2rem;">Log retention (runs)</label>
+        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">Logs older than this many runs are pruned automatically.</p>
+        <input type="number" id="s-logkeep" name="log_retention_runs" min="1" max="100"
+               value="{{ settings.get('log_retention_runs', '10') }}"
+               style="width:7rem; padding:.35rem .5rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.9rem;" />
+      </div>
+
+    </div>
+    <button type="submit" class="btn btn-primary" style="font-size:.88rem;">Save Settings</button>
+  </form>
+</div>
+
 <!-- ── Run OCR ── -->
 <div class="card" style="margin-bottom:1.25rem;">
   <h2 style="margin-bottom:.5rem;">Run OCR Pass</h2>
@@ -32,7 +79,7 @@
   <!-- Run options -->
   <details style="margin-bottom:1rem;" {% if ocr_running %}style="pointer-events:none; opacity:.6;"{% endif %}>
     <summary style="cursor:pointer; font-weight:500; margin-bottom:.75rem; user-select:none;">
-      Run options <span class="muted" style="font-weight:normal; font-size:.82rem;">(optional — leave blank to use saved defaults)</span>
+      Run options <span class="muted" style="font-weight:normal; font-size:.82rem;">(optional overrides for this run only)</span>
     </summary>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:.75rem 1.5rem; margin-top:.75rem;">
 
@@ -58,31 +105,9 @@
           Image limit
         </label>
         <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">
-          Stop after processing this many images. Useful for staged roll-outs or test runs.
+          Stop after processing this many images. Useful for test runs.
         </p>
         <input type="number" id="opt-limit" min="1" placeholder="no limit"
-               style="width:100%; padding:.3rem .45rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.85rem; box-sizing:border-box;" />
-      </div>
-
-      <div>
-        <label for="opt-workers" style="display:block; font-size:.82rem; font-weight:500; margin-bottom:.25rem;">
-          Worker threads
-        </label>
-        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">
-          Overrides the saved default for this run only.
-        </p>
-        <input type="number" id="opt-workers" min="1" max="32" placeholder="use default"
-               style="width:100%; padding:.3rem .45rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.85rem; box-sizing:border-box;" />
-      </div>
-
-      <div>
-        <label for="opt-batch-size" style="display:block; font-size:.82rem; font-weight:500; margin-bottom:.25rem;">
-          Batch size
-        </label>
-        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">
-          Overrides the saved default for this run only.
-        </p>
-        <input type="number" id="opt-batch-size" min="1" placeholder="use default"
                style="width:100%; padding:.3rem .45rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.85rem; box-sizing:border-box;" />
       </div>
 
@@ -330,12 +355,8 @@ function startOCR() {
   updateProgress({ pct: 0, current: 0, total: 0, processed: 0, skipped: 0, errors: 0 });
 
   const body = new URLSearchParams();
-  const limit     = document.getElementById('opt-limit')?.value.trim();
-  const workers   = document.getElementById('opt-workers')?.value.trim();
-  const batchSize = document.getElementById('opt-batch-size')?.value.trim();
-  if (limit)     body.append('limit',      limit);
-  if (workers)   body.append('workers',    workers);
-  if (batchSize) body.append('batch_size', batchSize);
+  const limit = document.getElementById('opt-limit')?.value.trim();
+  if (limit) body.append('limit', limit);
 
   // Append selected sources (empty = all)
   getSelectedSources().forEach(s => body.append('sources', s));
