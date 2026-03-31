@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS ocr_results (
     image_id           INTEGER NOT NULL,
     engine             TEXT NOT NULL,
     text               TEXT,
-    confidence         TEXT,
+    osd_confidence     REAL DEFAULT 0.0,
+    word_confidence    REAL DEFAULT 0.0,
+    psm                INTEGER DEFAULT 11,
     recipe_score       REAL DEFAULT 0.0,
     signals            TEXT,
     rotation_corrected INTEGER DEFAULT 0,
@@ -113,6 +115,37 @@ if "is_reviewed" not in _img_cols:
     cur.execute("ALTER TABLE images ADD COLUMN is_reviewed INTEGER DEFAULT 0")
     print("Migration: added 'is_reviewed' to images.")
 
+_ocr_cols = {row[1] for row in cur.execute("PRAGMA table_info(ocr_results)").fetchall()}
+if "ocr_confidence" not in _ocr_cols:
+    cur.execute("ALTER TABLE ocr_results ADD COLUMN ocr_confidence REAL DEFAULT 0.0")
+    print("Migration: added 'ocr_confidence' to ocr_results.")
+
+# Rename confidence → osd_confidence (requires SQLite 3.25+, shipped with Python 3.6+)
+# osd_confidence stores rotation-detection confidence from image_to_osd(), not OCR quality.
+if "confidence" in _ocr_cols and "osd_confidence" not in _ocr_cols:
+    cur.execute("ALTER TABLE ocr_results RENAME COLUMN confidence TO osd_confidence")
+    print("Migration: renamed 'confidence' to 'osd_confidence' in ocr_results.")
+
+# Rename ocr_confidence → word_confidence for clarity
+# word_confidence is the averaged per-word recognition score (0–100) from image_to_data().
+if "ocr_confidence" in _ocr_cols and "word_confidence" not in _ocr_cols:
+    cur.execute("ALTER TABLE ocr_results RENAME COLUMN ocr_confidence TO word_confidence")
+    print("Migration: renamed 'ocr_confidence' to 'word_confidence' in ocr_results.")
+elif "word_confidence" not in _ocr_cols:
+    cur.execute("ALTER TABLE ocr_results ADD COLUMN word_confidence REAL DEFAULT 0.0")
+    print("Migration: added 'word_confidence' to ocr_results.")
+
+# osd_confidence was previously stored as TEXT ("3.45"); migrate to REAL silently —
+# SQLite will cast on read so no explicit conversion is needed, but future rows
+# are written as REAL directly.
+if "osd_confidence" not in _ocr_cols:
+    cur.execute("ALTER TABLE ocr_results ADD COLUMN osd_confidence REAL DEFAULT 0.0")
+    print("Migration: added 'osd_confidence' to ocr_results.")
+
+if "psm" not in _ocr_cols:
+    cur.execute("ALTER TABLE ocr_results ADD COLUMN psm INTEGER DEFAULT 11")
+    print("Migration: added 'psm' to ocr_results (existing rows default to 11).")
+
 _run_cols = {row[1] for row in cur.execute("PRAGMA table_info(ocr_runs)").fetchall()}
 if "total" not in _run_cols:
     cur.execute("ALTER TABLE ocr_runs ADD COLUMN total INTEGER DEFAULT 0")
@@ -142,7 +175,7 @@ cur.execute("CREATE INDEX IF NOT EXISTS idx_failed_retried ON failed_images(retr
 cur.executemany(
     "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
     [
-        ("recipe_threshold",    "0.65"),
+        ("recipe_threshold",    "0.60"),
         # Number of parallel OCR threads.
         ("worker_count",        "2"),
         # Max futures submitted at once. Caps memory usage at scale.

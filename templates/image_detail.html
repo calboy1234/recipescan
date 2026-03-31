@@ -31,7 +31,7 @@
           ('Added',      img['added_at']),
           ('File size',  file_stat.get('size_human', '—')),
           ('Dimensions', file_stat.get('dimensions', '—')),
-          ('Format',     file_stat.get('format', '—')),
+          ('MIME type',  file_stat.get('mime_type',  '—')),
         ] %}
         {% for label, val in meta_rows %}
         <tr style="{{ 'border-top:1px solid var(--border);' if not loop.first }}">
@@ -44,7 +44,9 @@
         {% set angle = o['rotation_corrected'] %}
         {% for label, val in [
           ('Rotation corrected', (angle|string + '°') if angle else 'None'),
-          ('OSD confidence',     (o['confidence'] + ' / 100') if o['confidence'] and o['confidence'] != '0.0' else '—'),
+          ('OSD confidence',     ('%.2f'|format(o['osd_confidence']|float)) if o['osd_confidence'] else '—'),
+          ('Word confidence',    ('%.0f%%'|format(o['word_confidence']|float)) if o['word_confidence'] else '—'),
+          ('PSM used',           'PSM ' + (o['psm']|string) + ' — sparse text' if o['psm'] else '—'),
           ('Scanned',            o['created_at']),
           ('OCR engine',         o['engine'] | title),
         ] %}

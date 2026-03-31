@@ -83,6 +83,7 @@ import re
 import time
 import sqlite3
 import hashlib
+import statistics
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
@@ -90,6 +91,7 @@ from PIL import Image as PILImage, ImageOps
 import cv2
 import numpy as np
 import pytesseract
+from pytesseract import Output
 
 # ── OpenMP thread cap ──────────────────────────────────────────────────────────
 #
@@ -133,6 +135,7 @@ def list_photo_sources() -> list[str]:
     )
 OSD_TIMEOUT = 10   # seconds before OSD is abandoned and rotation skipped
 OCR_TIMEOUT = 60   # seconds before an OCR call is killed and the image errors
+OCR_PSM     = 11   # Tesseract page segmentation mode — 11 = sparse text, no layout assumptions
 
 
 # ── Settings helpers ───────────────────────────────────────────────────────────
@@ -228,49 +231,51 @@ def preprocess(img: PILImage.Image) -> PILImage.Image:
     return PILImage.fromarray(arr)
 
 
-def detect_column_split(img: PILImage.Image) -> bool:
+def ocr_with_confidence(img: PILImage.Image, psm: int) -> tuple[str, float]:
     """
-    Return True if the image appears to have two side-by-side text columns.
+    Run Tesseract with the given PSM and return (text, avg_word_confidence).
 
-    Strategy: examine the middle third of the image width. If that vertical
-    band has a significantly lower average pixel density than the left and
-    right thirds, the image is likely two-column. This catches the classic
-    recipe-card layout (ingredients left, amounts right, or two ingredient
-    columns) without requiring OpenCV.
+    Uses image_to_data instead of image_to_string so we get per-word
+    confidence scores (0–100) alongside the text.  Rows with conf == -1
+    are structural metadata (blocks/paragraphs/lines), not words — filtered
+    out before averaging.
 
-    Threshold is deliberately conservative — it's better to run PSM 11 on a
-    genuinely single-column image than to split a single column in half.
+    Text is reconstructed by grouping words into lines using the
+    (block_num, par_num, line_num) tuple from the data dict, then joining
+    lines with newlines.  This preserves the document structure that
+    recipe_detector relies on (ingredient lists, keyword density per line)
+    rather than collapsing everything into a single space-separated string.
     """
-    w, h  = img.size
-    third = w // 3
+    data = pytesseract.image_to_data(
+        img,
+        config=f"--psm {psm}",
+        output_type=Output.DICT,
+        timeout=OCR_TIMEOUT,
+    )
 
-    # Sample the middle third of the image height to avoid headers/footers
-    top    = h // 4
-    bottom = 3 * h // 4
+    line_words: dict[tuple, list[str]] = {}
+    confidences: list[int] = []
 
-    def col_darkness(x0, x1):
-        region = img.crop((x0, top, x1, bottom))
-        pixels = list(region.getdata())
-        return sum(255 - p for p in pixels) / len(pixels)   # higher = more ink
+    for i, word in enumerate(data["text"]):
+        conf = int(data["conf"][i])
+        if conf == -1:          # structural metadata row, not a word
+            continue
+        if not word.strip():    # empty string between words
+            continue
+        confidences.append(conf)
+        key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+        line_words.setdefault(key, []).append(word)
 
-    left_ink   = col_darkness(0,           third)
-    mid_ink    = col_darkness(third,       2 * third)
-    right_ink  = col_darkness(2 * third,   w)
-
-    avg_side = (left_ink + right_ink) / 2
-    # Call it two-column if the middle strip has ≤40% of the ink density of the sides
-    return avg_side > 0 and (mid_ink / avg_side) < 0.40
-
-
-def ocr_region(img: PILImage.Image, psm: int) -> str:
-    """Run Tesseract on a single PIL image region with the given PSM."""
-    return pytesseract.image_to_string(img, config=f"--psm {psm}",
-                                       timeout=OCR_TIMEOUT)
+    text     = "\n".join(" ".join(words) for words in line_words.values())
+    avg_conf = statistics.mean(confidences) if confidences else 0.0
+    return text, round(avg_conf, 2)
 
 
-def run_ocr(path: str, lines: list) -> tuple[str, int, float]:
+def run_ocr(path: str, lines: list) -> tuple[str, int, float, float]:
     """
     Open, preprocess, orient, then OCR the image with PSM 11.
+
+    Returns (text, angle_corrected, osd_confidence, word_confidence).
 
     PSM strategy
     ------------
@@ -279,58 +284,49 @@ def run_ocr(path: str, lines: list) -> tuple[str, int, float]:
     direction, or column structure, which suits recipe images well: text is
     often scattered across the card in variable-size chunks (title, ingredient
     list, instructions, margin notes) rather than forming a uniform block.
+    Column splitting is no longer needed — PSM 11 handles multi-column
+    layouts natively without any heuristic pre-detection.
 
-    Two-column detection is still performed. When a two-column layout is found
-    the image is split and each half is OCR'd independently with PSM 11 before
-    the results are joined. This reduces the chance of PSM 11 skipping text in
-    a dense two-column block by giving it a smaller, cleaner region to work on.
+    Memory management
+    -----------------
+    PIL images are closed as soon as they are no longer needed so that file
+    handles and pixel buffers are released promptly across long runs.
+    img.load() inside the 'with' block forces pixel data into memory before
+    the file handle closes, making the subsequent objects self-contained.
     """
-    img  = PILImage.open(path)
-    img  = ImageOps.exif_transpose(img)
-    grey = preprocess(img)
+    with PILImage.open(path) as raw:
+        img = ImageOps.exif_transpose(raw)
+        img.load()          # force pixel data into memory before file closes
+    # 'raw' file handle is now closed; 'img' owns its pixel data
 
-    angle, confidence = detect_rotation(grey)
+    grey = preprocess(img)
+    img.close()             # original no longer needed after binarization
+
+    osd_conf: float
+    angle, osd_conf = detect_rotation(grey)
 
     if angle != 0:
-        grey = grey.rotate(angle, expand=True)
+        rotated = grey.rotate(angle, expand=True)
+        grey.close()        # discard un-rotated version
+        grey = rotated
         lines.append(
             f"  rotation  : {angle}° corrected  "
-            f"(OSD confidence: {confidence:.2f})"
+            f"(OSD confidence: {osd_conf:.2f})"
         )
-    elif confidence > 0:
+    elif osd_conf > 0:
         label = (
             "below threshold, skipped"
-            if confidence < OSD_MIN_CONFIDENCE
+            if osd_conf < OSD_MIN_CONFIDENCE
             else "already upright"
         )
-        lines.append(f"  rotation  : none  (OSD confidence: {confidence:.2f} — {label})")
+        lines.append(f"  rotation  : none  (OSD confidence: {osd_conf:.2f} — {label})")
     else:
         lines.append("  rotation  : OSD unavailable or image has too little text")
 
-    two_col = detect_column_split(grey)
-    if two_col:
-        w, h      = grey.size
-        left_half  = grey.crop((0,     0, w // 2, h))
-        right_half = grey.crop((w // 2, 0, w,     h))
-        left_text  = ocr_region(left_half,  psm=11)
-        right_text = ocr_region(right_half, psm=11)
-        # Interleave lines from each column so the combined text reads naturally
-        left_lines  = left_text.splitlines()
-        right_lines = right_text.splitlines()
-        combined = []
-        for l, r in zip(left_lines, right_lines):
-            combined.append(l)
-            if r.strip():
-                combined.append(r)
-        combined.extend(left_lines[len(right_lines):])
-        combined.extend(right_lines[len(left_lines):])
-        text = "\n".join(combined)
-        lines.append(f"  layout    : two-column detected — split OCR applied")
-    else:
-        text = ocr_region(grey, psm=11)
-        lines.append(f"  layout    : single-column (PSM 11)")
+    text, word_conf = ocr_with_confidence(grey, psm=OCR_PSM)
+    grey.close()            # preprocessed image no longer needed
 
-    return text, angle, confidence
+    return text, angle, osd_conf, word_conf
 
 
 # ── Worker (runs in thread pool, no DB access) ─────────────────────────────────
@@ -343,7 +339,8 @@ def ocr_image(path: str, file_hash: str, threshold: float) -> dict:
     lines  = []
     result = {
         "path": path, "status": "error", "lines": lines,
-        "file_hash": file_hash, "text": "", "angle": 0, "osd_confidence": 0.0,
+        "file_hash": file_hash, "text": "", "angle": 0,
+        "osd_confidence": 0.0, "word_confidence": 0.0,
         "recipe_score": 0.0, "signals": {},
         "file_size": 0, "dimensions": "unknown",
         "ocr_time": 0.0, "error_msg": "",
@@ -364,13 +361,14 @@ def ocr_image(path: str, file_hash: str, threshold: float) -> dict:
         lines.append(f"  size      : {fmt_size(result['file_size'])}  {result['dimensions']}")
 
         t0 = time.time()
-        text, angle, confidence = run_ocr(path, lines)
-        result["ocr_time"]       = time.time() - t0
-        result["text"]           = text
-        result["angle"]          = angle
-        result["osd_confidence"] = confidence
+        text, angle, osd_confidence, word_confidence = run_ocr(path, lines)
+        result["ocr_time"]        = time.time() - t0
+        result["text"]            = text
+        result["angle"]           = angle
+        result["osd_confidence"]  = osd_confidence
+        result["word_confidence"] = word_confidence
 
-        lines.append(f"  ocr time  : {result['ocr_time']:.1f}s")
+        lines.append(f"  ocr time  : {result['ocr_time']:.1f}s  (word confidence: {word_confidence:.0f}%)")
 
         detection = score_text(text)
         result["recipe_score"] = detection["score"]
@@ -428,12 +426,15 @@ def write_result(cur: sqlite3.Cursor, result: dict) -> str:
     cur.execute(
         """
         INSERT INTO ocr_results
-            (image_id, engine, text, confidence, recipe_score, signals, rotation_corrected)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (image_id, engine, text, osd_confidence, word_confidence,
+             psm, recipe_score, signals, rotation_corrected)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             image_id, "tesseract", result["text"],
-            str(round(result.get("osd_confidence", 0.0), 2)),
+            round(result.get("osd_confidence", 0.0), 2),
+            result.get("word_confidence", 0.0),
+            OCR_PSM,
             result["recipe_score"], json.dumps(result["signals"]),
             result["angle"],
         ),

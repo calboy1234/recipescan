@@ -192,6 +192,12 @@ def image_detail(image_id):
             with _PIL.open(file_path) as probe:
                 file_stat["dimensions"] = f"{probe.width} × {probe.height} px"
                 file_stat["format"]     = probe.format or "unknown"
+                # Derive MIME from the actual format PIL detected, not just the extension
+                file_stat["mime_type"]  = (
+                    mimetypes.types_map.get("." + probe.format.lower(), "")
+                    or mimetypes.guess_type(file_path)[0]
+                    or "application/octet-stream"
+                )
         except Exception:
             pass
 
