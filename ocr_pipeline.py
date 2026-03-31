@@ -102,8 +102,8 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from recipe_detector import score_text
 
-PHOTO_DIR  = "/photos"
-DB_PATH    = "/data/database/recipescan.db"
+PHOTO_DIR  = os.environ.get("PHOTO_DIR", "/photos")
+DB_PATH    = os.environ.get("DB_PATH",   "/data/database/recipescan.db")
 VALID_EXTS = (".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp")
 
 DEFAULT_THRESHOLD    = 0.60
@@ -113,6 +113,24 @@ DEFAULT_COMMIT_EVERY = 50
 DEFAULT_LOG_KEEP     = 10
 
 OSD_MIN_CONFIDENCE = 2.0
+
+
+def list_photo_sources() -> list[str]:
+    """
+    Return a sorted list of immediate subfolder names under PHOTO_DIR.
+
+    Each subfolder is treated as an independent image source that can be
+    selected individually in the web UI.  If PHOTO_DIR has no subfolders
+    (i.e. images live directly in the root), returns an empty list —
+    the caller should then treat the root itself as the single source.
+    """
+    if not os.path.isdir(PHOTO_DIR):
+        return []
+    return sorted(
+        entry.name
+        for entry in os.scandir(PHOTO_DIR)
+        if entry.is_dir()
+    )
 OSD_TIMEOUT = 10   # seconds before OSD is abandoned and rotation skipped
 OCR_TIMEOUT = 60   # seconds before an OCR call is killed and the image errors
 
@@ -464,7 +482,8 @@ def main(
     stop_event: threading.Event = None,
     *,
     limit: int = None,
-    directory_filter: str = None,
+    sources: list = None,
+    directory_filter: str = None,   # deprecated alias → wrapped into sources
     retry_failed: bool = False,
     worker_count: int = None,
     batch_size: int = None,
@@ -478,7 +497,10 @@ def main(
     run_id           : ocr_runs row ID for persisting log lines and progress
     stop_event       : threading.Event; set it to request a graceful stop
     limit            : process at most this many images (None = no limit)
-    directory_filter : only process images under this subdirectory of PHOTO_DIR
+    sources          : list of subfolder names under PHOTO_DIR to scan.
+                       None or [] = scan all of PHOTO_DIR.
+    directory_filter : deprecated single-folder alias; still accepted so
+                       existing callers don't break.
     retry_failed     : if True, re-process images from failed_images instead
                        of the normal new-image scan
     worker_count     : override the worker_count setting
@@ -486,6 +508,10 @@ def main(
     """
     if stop_event is None:
         stop_event = threading.Event()
+
+    # Back-compat: wrap legacy directory_filter into sources list
+    if directory_filter and not sources:
+        sources = [directory_filter]
 
     if not os.path.isdir(PHOTO_DIR):
         log("ERROR: /photos is not mounted or does not exist.")
@@ -555,20 +581,29 @@ def main(
         conn.commit()
         log_db("  Mode       : RETRY FAILED IMAGES")
     else:
-        # Normal scan: walk PHOTO_DIR and skip anything already in the DB.
-        scan_root = PHOTO_DIR
-        if directory_filter:
-            candidate = os.path.join(PHOTO_DIR, directory_filter.lstrip("/"))
-            if os.path.isdir(candidate):
-                scan_root = candidate
-            else:
-                log_db(f"WARNING: directory_filter '{directory_filter}' not found, scanning all.")
+        # Normal scan: collect image paths from one, some, or all sources.
+        # If `sources` is None/empty → scan the whole PHOTO_DIR root.
+        # Otherwise → scan each named subfolder and union the results.
+        if sources:
+            scan_roots = []
+            for src in sources:
+                candidate = os.path.join(PHOTO_DIR, src.lstrip("/"))
+                if os.path.isdir(candidate):
+                    scan_roots.append(candidate)
+                else:
+                    log_db(f"WARNING: source '{src}' not found under {PHOTO_DIR}, skipping.")
+            if not scan_roots:
+                log_db("ERROR: none of the requested sources exist — falling back to full scan.")
+                scan_roots = [PHOTO_DIR]
+        else:
+            scan_roots = [PHOTO_DIR]
 
         all_paths = []
-        for root, _, files in os.walk(scan_root):
-            for filename in sorted(files):
-                if filename.lower().endswith(VALID_EXTS):
-                    all_paths.append(os.path.join(root, filename))
+        for scan_root in scan_roots:
+            for root, _, files in os.walk(scan_root):
+                for filename in sorted(files):
+                    if filename.lower().endswith(VALID_EXTS):
+                        all_paths.append(os.path.join(root, filename))
 
         existing_hashes = set(
             row[0] for row in conn.execute("SELECT file_hash FROM images").fetchall()
@@ -600,6 +635,10 @@ def main(
     log_db(f"  RecipeScan OCR Pipeline v2")
     log_db(f"  Started    : {time.strftime('%Y-%m-%d %H:%M:%S')}")
     log_db(f"  Photos dir : {PHOTO_DIR}")
+    if sources:
+        log_db(f"  Sources    : {', '.join(sources)}")
+    else:
+        log_db(f"  Sources    : all")
     log_db(f"  Threshold  : {threshold:.0%}")
     log_db(f"  Workers    : {n_workers}")
     log_db(f"  Batch size : {n_batch}")

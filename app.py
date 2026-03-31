@@ -27,16 +27,38 @@ from flask import (
     jsonify, send_file, Response, stream_with_context,
 )
 
-from ocr_pipeline import main as run_ocr_pipeline
+from ocr_pipeline import main as run_ocr_pipeline, list_photo_sources
 from recipe_detector import extract_title
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-DB_PATH = os.environ.get("DB_PATH", "/data/database/recipescan.db")
+DB_PATH    = os.environ.get("DB_PATH",    "/data/database/recipescan.db")
+PHOTO_DIR  = os.environ.get("PHOTO_DIR",  "/photos")
 ITEMS_PER_PAGE = 20
 
 app.jinja_env.filters["fromjson"] = json.loads
+
+# ── Safe filter queries (no f-string interpolation of user input) ──────────────
+#
+# Each key maps to a complete WHERE clause and its bound parameters.
+# filter_val is always validated against this dict before use — unknown values
+# fall back to "all" so user-controlled input never reaches the SQL string.
+
+_GALLERY_FILTERS: dict[str, tuple[str, list]] = {
+    "all":        ("1=1", []),
+    "unreviewed": ("img.is_reviewed = 0 AND ocr.recipe_score >= ?", None),   # threshold injected at call-time
+    "detected":   ("ocr.recipe_score >= ?",                          None),
+    "reviewed":   ("img.is_reviewed = 1",                            []),
+    "unscanned":  ("ocr.id IS NULL",                                 []),
+    "errors":     (
+        "img.id IN ("
+        "  SELECT DISTINCT i2.id FROM failed_images f"
+        "  JOIN images i2 ON i2.file_hash = f.file_hash"
+        ")",
+        [],
+    ),
+}
 
 # ── Global pipeline state ──────────────────────────────────────────────────────
 
@@ -80,33 +102,21 @@ def index():
     page       = request.args.get("page", 1, type=int)
     filter_val = request.args.get("filter", "all")
 
+    # Validate filter_val against the known safe set; unknown → "all"
+    if filter_val not in _GALLERY_FILTERS:
+        filter_val = "all"
+
+    where_clause, params = _GALLERY_FILTERS[filter_val]
+    # Filters that need the threshold inject it here (params is None as sentinel)
+    if params is None:
+        params = [threshold]
+
     conn = get_db()
-    where_clauses = []
-    params = []
-
-    if filter_val == "unreviewed":
-        where_clauses.append("img.is_reviewed = 0 AND ocr.recipe_score >= ?")
-        params = [threshold]
-    elif filter_val == "detected":
-        where_clauses.append("ocr.recipe_score >= ?")
-        params = [threshold]
-    elif filter_val == "reviewed":
-        where_clauses.append("img.is_reviewed = 1")
-    elif filter_val == "unscanned":
-        where_clauses.append("ocr.id IS NULL")
-    elif filter_val == "errors":
-        where_clauses.append(
-            "img.id IN (SELECT DISTINCT f.file_hash "
-            "FROM failed_images f "
-            "JOIN images i2 ON i2.file_hash = f.file_hash)"
-        )
-
-    where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
 
     total = conn.execute(
-        f"SELECT COUNT(*) FROM images img "
-        f"LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
-        f"WHERE {where_clause}",
+        "SELECT COUNT(*) FROM images img "
+        "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
+        "WHERE " + where_clause,
         params,
     ).fetchone()[0]
 
@@ -115,15 +125,13 @@ def index():
     offset      = (page - 1) * ITEMS_PER_PAGE
 
     rows = conn.execute(
-        f"""
-        SELECT img.id, img.file_path, img.is_reviewed, img.added_at,
-               ocr.id as ocr_id, ocr.recipe_score
-        FROM images img
-        LEFT JOIN ocr_results ocr ON img.id = ocr.image_id
-        WHERE {where_clause}
-        ORDER BY img.added_at DESC
-        LIMIT ? OFFSET ?
-        """,
+        "SELECT img.id, img.file_path, img.is_reviewed, img.added_at,"
+        "       ocr.id as ocr_id, ocr.recipe_score "
+        "FROM images img "
+        "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
+        "WHERE " + where_clause + " "
+        "ORDER BY img.added_at DESC "
+        "LIMIT ? OFFSET ?",
         params + [ITEMS_PER_PAGE, offset],
     ).fetchall()
 
@@ -160,10 +168,17 @@ def serve_photo(image_id):
     if not img:
         return render_template("error.html", error="Photo not found"), 404
     file_path = img["file_path"]
-    if not os.path.exists(file_path):
+
+    # Path traversal guard: resolve symlinks and confirm the file lives under PHOTO_DIR
+    real_photo_dir = os.path.realpath(PHOTO_DIR)
+    real_file_path = os.path.realpath(file_path)
+    if not real_file_path.startswith(real_photo_dir + os.sep):
+        return render_template("error.html", error="Access denied"), 403
+
+    if not os.path.exists(real_file_path):
         return render_template("error.html", error="Photo file not found on disk"), 404
-    mime_type, _ = mimetypes.guess_type(file_path)
-    return send_file(file_path, mimetype=mime_type or "image/jpeg")
+    mime_type, _ = mimetypes.guess_type(real_file_path)
+    return send_file(real_file_path, mimetype=mime_type or "image/jpeg")
 
 
 @app.route("/image/<int:image_id>/review", methods=["POST"])
@@ -272,6 +287,14 @@ def admin():
     )
 
 
+# ── Admin: list photo sources ─────────────────────────────────────────────────
+
+@app.route("/admin/photo-sources")
+def photo_sources():
+    """Return the list of subfolders under PHOTO_DIR as selectable sources."""
+    return jsonify({"sources": list_photo_sources()})
+
+
 # ── Admin: start pipeline ──────────────────────────────────────────────────────
 
 @app.route("/admin/run-ocr", methods=["POST"])
@@ -283,18 +306,21 @@ def run_ocr():
             return "OCR already running", 409
 
         # Parse run options from the form
-        limit            = request.form.get("limit",      type=int) or None
-        directory_filter = request.form.get("dir_filter", "").strip() or None
-        worker_count     = request.form.get("workers",    type=int) or None
-        batch_size       = request.form.get("batch_size", type=int) or None
-        retry_failed     = bool(request.form.get("retry_failed"))
+        limit        = request.form.get("limit",      type=int) or None
+        worker_count = request.form.get("workers",    type=int) or None
+        batch_size   = request.form.get("batch_size", type=int) or None
+        retry_failed = bool(request.form.get("retry_failed"))
+
+        # Multi-source selection: list of subfolder names; empty / ["all"] → None (scan everything)
+        raw_sources = request.form.getlist("sources")
+        sources = [s for s in raw_sources if s and s != "all"] or None
 
         options = {
-            "limit":            limit,
-            "directory_filter": directory_filter,
-            "worker_count":     worker_count,
-            "batch_size":       batch_size,
-            "retry_failed":     retry_failed,
+            "sources":      sources,
+            "limit":        limit,
+            "worker_count": worker_count,
+            "batch_size":   batch_size,
+            "retry_failed": retry_failed,
         }
 
         ocr_running    = True
@@ -319,7 +345,7 @@ def run_ocr():
                 run_id=run_id,
                 stop_event=ocr_stop_event,
                 limit=limit,
-                directory_filter=directory_filter,
+                sources=sources,
                 worker_count=worker_count,
                 batch_size=batch_size,
                 retry_failed=retry_failed,
@@ -407,8 +433,10 @@ def ocr_stream():
                 "WHERE run_id = ? AND id > ? ORDER BY id ASC",
                 (run_id, last_line_id),
             ).fetchall()
-            run_status = conn.execute(
-                "SELECT status FROM ocr_runs WHERE id = ?", (run_id,)
+            run_row = conn.execute(
+                "SELECT status, total, current_count, processed, skipped, errors "
+                "FROM ocr_runs WHERE id = ?",
+                (run_id,),
             ).fetchone()
             conn.close()
 
@@ -416,9 +444,25 @@ def ocr_stream():
                 last_line_id = row["id"]
                 yield f"data: {row['line'].replace(chr(10), chr(92) + 'n')}\n\n"
 
-            if run_status and run_status["status"] not in ("running",):
-                yield "data: __DONE__\n\n"
-                break
+            # Push a progress update on every poll so the UI bar is truly real-time
+            if run_row:
+                total   = run_row["total"] or 0
+                current = run_row["current_count"] or 0
+                pct     = round(100 * current / total, 1) if total else 0
+                progress_payload = json.dumps({
+                    "current":   current,
+                    "total":     total,
+                    "pct":       pct,
+                    "processed": run_row["processed"],
+                    "skipped":   run_row["skipped"],
+                    "errors":    run_row["errors"],
+                    "status":    run_row["status"],
+                })
+                yield f"data: __PROGRESS__:{progress_payload}\n\n"
+
+                if run_row["status"] not in ("running",):
+                    yield "data: __DONE__\n\n"
+                    break
 
             time.sleep(0.1)
 
@@ -607,23 +651,22 @@ def export():
 
     conn = get_db()
 
-    where = "1=1"
-    params: list = []
-    if filter_by == "detected":
-        where = "o.recipe_score >= ?"
-        params = [threshold]
-    elif filter_by == "reviewed":
-        where = "i.is_reviewed = 1"
+    _export_queries: dict[str, tuple[str, list]] = {
+        "all":      ("1=1",                    []),
+        "detected": ("o.recipe_score >= ?",    [threshold]),
+        "reviewed": ("i.is_reviewed = 1",      []),
+    }
+    if filter_by not in _export_queries:
+        filter_by = "all"
+    where, params = _export_queries[filter_by]
 
     rows = conn.execute(
-        f"""
-        SELECT i.id, i.file_path, i.file_hash, i.is_reviewed, i.added_at,
-               o.recipe_score, o.signals, o.text, o.rotation_corrected
-        FROM images i
-        LEFT JOIN ocr_results o ON i.id = o.image_id
-        WHERE {where}
-        ORDER BY i.added_at DESC
-        """,
+        "SELECT i.id, i.file_path, i.file_hash, i.is_reviewed, i.added_at,"
+        "       o.recipe_score, o.signals, o.text, o.rotation_corrected "
+        "FROM images i "
+        "LEFT JOIN ocr_results o ON i.id = o.image_id "
+        "WHERE " + where + " "
+        "ORDER BY i.added_at DESC",
         params,
     ).fetchall()
     conn.close()

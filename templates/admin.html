@@ -36,16 +36,21 @@
     </summary>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:.75rem 1.5rem; margin-top:.75rem;">
 
-      <div>
-        <label for="opt-dir-filter" style="display:block; font-size:.82rem; font-weight:500; margin-bottom:.25rem;">
-          Subdirectory filter
+      <!-- Photo Sources (dynamic) -->
+      <div style="grid-column:1/-1;">
+        <label style="display:block; font-size:.82rem; font-weight:500; margin-bottom:.25rem;">
+          Photo Sources
         </label>
-        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">
-          Only scan this folder under <code>/photos</code>, e.g. <code>2024/june</code>.
-          Leave blank to scan everything.
+        <p class="muted" style="font-size:.76rem; margin-bottom:.4rem;">
+          Select which folders under <code>/photos</code> to scan. Check "All sources" to scan everything.
         </p>
-        <input type="text" id="opt-dir-filter" placeholder="e.g. 2024/june"
-               style="width:100%; padding:.3rem .45rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.85rem; box-sizing:border-box;" />
+        <div id="sources-container" style="display:flex; flex-wrap:wrap; gap:.4rem .9rem; align-items:center;">
+          <label style="font-size:.83rem; display:flex; align-items:center; gap:.3rem;">
+            <input type="checkbox" id="chk-all-sources" checked onchange="toggleAllSources(this)" />
+            <strong>All sources</strong>
+          </label>
+          <span class="muted" id="sources-loading" style="font-size:.76rem;">Loading…</span>
+        </div>
       </div>
 
       <div>
@@ -115,6 +120,21 @@
   </div>
 
   <div style="position:relative;">
+    <!-- Progress bar (updated via SSE __PROGRESS__ messages) -->
+    <div id="progress-wrap" style="margin-bottom:.75rem; {{ 'display:none;' if not ocr_running }}">
+      <div style="display:flex; justify-content:space-between; font-size:.76rem; color:var(--muted); margin-bottom:.25rem;">
+        <span id="progress-label">Preparing…</span>
+        <span id="progress-pct">0%</span>
+      </div>
+      <div style="background:#e8e8e4; border-radius:99px; height:8px; overflow:hidden;">
+        <div id="progress-bar" style="background:#e67e22; height:100%; width:0%; transition:width .3s ease; border-radius:99px;"></div>
+      </div>
+      <div style="display:flex; gap:1rem; font-size:.73rem; color:var(--muted); margin-top:.3rem;">
+        <span>✓ <span id="prog-processed">0</span> processed</span>
+        <span>⤼ <span id="prog-skipped">0</span> skipped</span>
+        <span>✕ <span id="prog-errors">0</span> errors</span>
+      </div>
+    </div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.4rem;">
       <span class="muted" style="font-size:.76rem;">
         Pipeline log{% if last_run %} — Run #{{ last_run['id'] }} ({{ last_run['status'] }}){% endif %}
@@ -141,12 +161,11 @@
     Deletes all images, OCR results, and run logs. Review status is lost.
     Your photo files are not affected.
   </p>
-  <form action="/admin/clear-scans" method="post"
-        onsubmit="return confirm('Clear all scan data? This cannot be undone.')">
-    <button type="submit" class="btn btn-outline" style="border-color:#e67e22; color:#e67e22;">
-      🗑 Clear All Scan Data
-    </button>
-  </form>
+  <button type="button" class="btn btn-outline" style="border-color:#e67e22; color:#e67e22;"
+          onclick="showConfirmModal('clear')">
+    🗑 Clear All Scan Data
+  </button>
+  <form id="form-clear-scans" action="/admin/clear-scans" method="post" style="display:none;"></form>
 </div>
 
 <!-- ── Full reset ── -->
@@ -156,13 +175,44 @@
     Wipes all tables including settings, then re-initialises with defaults.
     <strong>Cannot be undone.</strong>
   </p>
-  <form action="/admin/reset-db" method="post"
-        onsubmit="return confirm('FULL RESET — delete all data and settings. Cannot be undone. Continue?')">
-    <button type="submit" class="btn btn-danger">⚠ Full Database Reset</button>
-  </form>
+  <button type="button" class="btn btn-danger"
+          onclick="showConfirmModal('reset')">
+    ⚠ Full Database Reset
+  </button>
+  <form id="form-reset-db" action="/admin/reset-db" method="post" style="display:none;"></form>
+</div>
+
+<!-- ── Confirmation modal ── -->
+<div id="confirm-modal" style="
+  display:none; position:fixed; inset:0; z-index:1000;
+  background:rgba(0,0,0,.45); align-items:center; justify-content:center;">
+  <div style="
+    background:#fff; border-radius:var(--radius); padding:1.75rem 2rem;
+    max-width:420px; width:90%; box-shadow:0 8px 32px rgba(0,0,0,.22);">
+    <h2 id="modal-title" style="margin:0 0 .6rem; font-size:1.1rem;"></h2>
+    <p  id="modal-body"  style="margin:0 0 1rem; font-size:.88rem; color:var(--muted); line-height:1.5;"></p>
+
+    <!-- Shown only for the full reset — user must type RESET -->
+    <div id="modal-type-wrap" style="display:none; margin-bottom:1rem;">
+      <label style="font-size:.82rem; font-weight:500; display:block; margin-bottom:.3rem;">
+        Type <strong>RESET</strong> to confirm:
+      </label>
+      <input id="modal-type-input" type="text" autocomplete="off"
+             placeholder="RESET"
+             oninput="document.getElementById('modal-confirm-btn').disabled = this.value !== 'RESET'"
+             style="width:100%; padding:.35rem .5rem; border:1px solid var(--border);
+                    border-radius:var(--radius); font-size:.9rem; box-sizing:border-box;" />
+    </div>
+
+    <div style="display:flex; gap:.75rem; justify-content:flex-end;">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button id="modal-confirm-btn" class="btn btn-danger" onclick="submitModal()">Confirm</button>
+    </div>
+  </div>
 </div>
 
 <script>
+// ── Log helpers ────────────────────────────────────────────────────────────────
 const logEl = document.getElementById('ocr-log');
 
 function scrollToBottom() { logEl.scrollTop = logEl.scrollHeight; }
@@ -178,25 +228,117 @@ window.addEventListener('DOMContentLoaded', () => {
   if (logEl.textContent.trim()) scrollToBottom();
 });
 
+// ── Progress bar helpers ───────────────────────────────────────────────────────
+function updateProgress(data) {
+  const wrap = document.getElementById('progress-wrap');
+  wrap.style.display = '';
+  document.getElementById('progress-bar').style.width = (data.pct || 0) + '%';
+  document.getElementById('progress-pct').textContent = (data.pct || 0) + '%';
+  document.getElementById('prog-processed').textContent = data.processed ?? 0;
+  document.getElementById('prog-skipped').textContent   = data.skipped   ?? 0;
+  document.getElementById('prog-errors').textContent    = data.errors    ?? 0;
+  const current = data.current ?? 0, total = data.total ?? 0;
+  document.getElementById('progress-label').textContent =
+    total ? `${current} / ${total} images` : 'Preparing…';
+}
+
+// ── SSE helpers ────────────────────────────────────────────────────────────────
+function attachStream(onDone) {
+  const es = new EventSource('/admin/ocr-stream');
+  es.onmessage = e => {
+    if (e.data.startsWith('__PROGRESS__:')) {
+      try { updateProgress(JSON.parse(e.data.slice(13))); } catch {}
+      return;
+    }
+    if (e.data === '__DONE__') {
+      es.close();
+      if (onDone) onDone();
+      return;
+    }
+    appendLine(e.data);
+  };
+  es.onerror = () => {
+    es.close();
+    appendLine('\n[stream closed]');
+    if (onDone) onDone();
+  };
+  return es;
+}
+
+// ── Photo sources (dynamic checkboxes) ────────────────────────────────────────
+let photoSources = [];
+
+async function loadSources() {
+  const container = document.getElementById('sources-container');
+  const loading   = document.getElementById('sources-loading');
+  try {
+    const res  = await fetch('/admin/photo-sources');
+    const data = await res.json();
+    photoSources = data.sources || [];
+    loading.remove();
+
+    if (photoSources.length === 0) {
+      const note = document.createElement('span');
+      note.className = 'muted';
+      note.style.fontSize = '.76rem';
+      note.textContent = 'No subfolders found — scanning /photos directly.';
+      container.appendChild(note);
+      return;
+    }
+
+    photoSources.forEach(src => {
+      const lbl = document.createElement('label');
+      lbl.style.cssText = 'font-size:.83rem; display:flex; align-items:center; gap:.3rem;';
+      lbl.innerHTML = `<input type="checkbox" class="src-chk" value="${src}" checked /> ${src}`;
+      lbl.querySelector('input').addEventListener('change', syncAllSourcesCheckbox);
+      container.appendChild(lbl);
+    });
+  } catch {
+    loading.textContent = 'Could not load sources.';
+  }
+}
+
+function toggleAllSources(master) {
+  document.querySelectorAll('.src-chk').forEach(c => { c.checked = master.checked; });
+}
+
+function syncAllSourcesCheckbox() {
+  const all  = document.querySelectorAll('.src-chk');
+  const checked = [...all].filter(c => c.checked);
+  document.getElementById('chk-all-sources').checked = checked.length === all.length;
+}
+
+function getSelectedSources() {
+  const all = document.getElementById('chk-all-sources');
+  if (all && all.checked) return [];          // empty = all
+  return [...document.querySelectorAll('.src-chk:checked')].map(c => c.value);
+}
+
+// ── Start / stop OCR ──────────────────────────────────────────────────────────
 function startOCR() {
-  const btn    = document.getElementById('btn-run-ocr');
-  const stopBtn= document.getElementById('btn-stop-ocr');
-  const status = document.getElementById('ocr-status');
+  const btn     = document.getElementById('btn-run-ocr');
+  const stopBtn = document.getElementById('btn-stop-ocr');
+  const status  = document.getElementById('ocr-status');
+
   btn.disabled    = true;
   btn.textContent = '⏳ Running…';
   stopBtn.style.display = '';
   status.textContent = 'Starting pipeline…';
   logEl.textContent  = '';
 
+  // Reset progress bar
+  updateProgress({ pct: 0, current: 0, total: 0, processed: 0, skipped: 0, errors: 0 });
+
   const body = new URLSearchParams();
-  const dirFilter  = document.getElementById('opt-dir-filter')?.value.trim();
-  const limit      = document.getElementById('opt-limit')?.value.trim();
-  const workers    = document.getElementById('opt-workers')?.value.trim();
-  const batchSize  = document.getElementById('opt-batch-size')?.value.trim();
-  if (dirFilter) body.append('dir_filter',  dirFilter);
-  if (limit)     body.append('limit',       limit);
-  if (workers)   body.append('workers',     workers);
-  if (batchSize) body.append('batch_size',  batchSize);
+  const limit     = document.getElementById('opt-limit')?.value.trim();
+  const workers   = document.getElementById('opt-workers')?.value.trim();
+  const batchSize = document.getElementById('opt-batch-size')?.value.trim();
+  if (limit)     body.append('limit',      limit);
+  if (workers)   body.append('workers',    workers);
+  if (batchSize) body.append('batch_size', batchSize);
+
+  // Append selected sources (empty = all)
+  getSelectedSources().forEach(s => body.append('sources', s));
 
   fetch('/admin/run-ocr', { method: 'POST', body }).then(r => {
     if (!r.ok && r.status !== 204) {
@@ -207,45 +349,88 @@ function startOCR() {
       return;
     }
     status.textContent = 'Running…';
-    const es = new EventSource('/admin/ocr-stream');
-    es.onmessage = e => {
-      if (e.data === '__DONE__') {
-        es.close();
-        btn.disabled    = false;
-        btn.textContent = '▶ Run OCR Now';
-        stopBtn.style.display = 'none';
-        status.textContent = 'Complete — refresh to update stats.';
-      } else {
-        appendLine(e.data);
-      }
-    };
-    es.onerror = () => {
-      es.close();
-      appendLine('\n[stream closed]');
+    attachStream(() => {
       btn.disabled    = false;
       btn.textContent = '▶ Run OCR Now';
       stopBtn.style.display = 'none';
-      status.textContent = '';
-    };
+      status.textContent = 'Complete — refresh to update stats.';
+    });
   });
 }
 
 function stopOCR() {
-  const status = document.getElementById('ocr-status');
-  status.textContent = 'Stop requested — finishing current image…';
+  document.getElementById('ocr-status').textContent = 'Stop requested — finishing current image…';
   fetch('/admin/stop-ocr', { method: 'POST' });
 }
 
+// Auto-attach stream if pipeline was already running when page loaded
 {% if ocr_running %}
 document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('progress-wrap').style.display = '';
   logEl.textContent = '';
-  const es = new EventSource('/admin/ocr-stream');
-  es.onmessage = e => {
-    if (e.data === '__DONE__') { es.close(); location.reload(); }
-    else appendLine(e.data);
-  };
-  es.onerror = () => es.close();
+  attachStream(() => location.reload());
 });
 {% endif %}
+
+// ── Confirmation modal ─────────────────────────────────────────────────────────
+let _modalTarget = null;
+
+const MODAL_CONFIG = {
+  clear: {
+    title: '🗑 Clear All Scan Data?',
+    body:  'This will delete all scanned images, OCR results, run logs, and review status. Your photo files are NOT affected. This cannot be undone.',
+    requireType: false,
+    form: 'form-clear-scans',
+  },
+  reset: {
+    title: '⚠ Full Database Reset?',
+    body:  'This wipes every table — including settings — and re-initialises from scratch. All scan history and review status will be permanently lost.',
+    requireType: true,
+    form: 'form-reset-db',
+  },
+};
+
+function showConfirmModal(target) {
+  _modalTarget = target;
+  const cfg = MODAL_CONFIG[target];
+  document.getElementById('modal-title').textContent = cfg.title;
+  document.getElementById('modal-body').textContent  = cfg.body;
+
+  const typeWrap = document.getElementById('modal-type-wrap');
+  const typeInput = document.getElementById('modal-type-input');
+  const confirmBtn = document.getElementById('modal-confirm-btn');
+
+  if (cfg.requireType) {
+    typeWrap.style.display = '';
+    typeInput.value = '';
+    confirmBtn.disabled = true;
+  } else {
+    typeWrap.style.display = 'none';
+    confirmBtn.disabled = false;
+  }
+
+  const modal = document.getElementById('confirm-modal');
+  modal.style.display = 'flex';
+  if (cfg.requireType) typeInput.focus();
+}
+
+function closeModal() {
+  document.getElementById('confirm-modal').style.display = 'none';
+  _modalTarget = null;
+}
+
+function submitModal() {
+  if (!_modalTarget) return;
+  document.getElementById(MODAL_CONFIG[_modalTarget].form).submit();
+  closeModal();
+}
+
+// Close modal on backdrop click
+document.getElementById('confirm-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+// Load sources on page ready
+document.addEventListener('DOMContentLoaded', loadSources);
 </script>
 {% endblock %}

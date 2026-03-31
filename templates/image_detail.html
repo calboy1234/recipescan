@@ -82,18 +82,18 @@
             </tr>
           </thead>
           <tbody>
-            {% set rows = [
-              ('Recipe keywords',       sig.keyword_hits,  sig.keyword_score,  '0.35'),
-              ('Measurement units',     sig.unit_hits,     sig.unit_score,     '0.35'),
-              ('Fractions & quantities',sig.fraction_hits, sig.fraction_score, '0.20'),
-              ('Bullet / list',         sig.bullet_hits,   sig.list_score,     '0.10'),
+            {% set signal_rows = [
+              ('Ingredients',           sig.get('ingredient_hits', '—'), sig.get('ingredient_score', 0), '0.40'),
+              ('Recipe keywords',       sig.get('keyword_hits',    '—'), sig.get('keyword_score',    0), '0.30'),
+              ('Measurement units',     sig.get('unit_hits',       '—'), sig.get('unit_score',       0), '0.20'),
+              ('Fractions & quantities',sig.get('fraction_hits',   '—'), sig.get('fraction_score',   0), '0.12'),
             ] %}
-            {% for label, hits, score, max in rows %}
+            {% for label, hits, score, max_val in signal_rows %}
             <tr {% if loop.index % 2 == 0 %}style="background:#fafaf8;"{% endif %}>
               <td style="padding:.28rem .45rem; border:1px solid var(--border);">{{ label }}</td>
               <td style="text-align:center; padding:.28rem .45rem; border:1px solid var(--border);">{{ hits }}</td>
-              <td style="text-align:right; padding:.28rem .45rem; border:1px solid var(--border);">{{ "%.2f"|format(score) }}</td>
-              <td style="text-align:right; padding:.28rem .45rem; border:1px solid var(--border); color:var(--muted);">{{ max }}</td>
+              <td style="text-align:right; padding:.28rem .45rem; border:1px solid var(--border);">{{ "%.2f"|format(score or 0) }}</td>
+              <td style="text-align:right; padding:.28rem .45rem; border:1px solid var(--border); color:var(--muted);">{{ max_val }}</td>
             </tr>
             {% endfor %}
             <tr style="font-weight:bold; background:#fef5ec;">

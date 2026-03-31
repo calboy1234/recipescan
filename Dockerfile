@@ -23,8 +23,21 @@ COPY app.py           .
 COPY templates/       ./templates/
 COPY static/          ./static/
 
-# /photos → mount your image library here (read-only recommended)
-# /data   → mount your persistent data directory here
+# /photos → mount your image library here (read-only recommended).
+#            Organise multiple image sources as subfolders so the web UI
+#            can list and select them independently at runtime:
+#
+#              Host path              Container path
+#              /mnt/user/photos/main  → /photos/main
+#              /mnt/user/photos/archive → /photos/archive
+#              /mnt/user/photos/test  → /photos/test
+#
+#            In Unraid, add each host folder as a separate path mapping
+#            under the same container path parent (/photos).
+#            The web UI auto-discovers subfolders and shows checkboxes.
+#            Leave images directly in /photos root for single-source use.
+#
+# /data   → mount your persistent data directory here (read-write required).
 VOLUME ["/photos", "/data"]
 
 EXPOSE 5000

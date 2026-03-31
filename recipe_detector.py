@@ -210,10 +210,14 @@ def score_text(text: str) -> dict:
         "score": round(_clamp(total), 4),
         "is_recipe": total >= RECIPE_THRESHOLD,
         "signals": {
+            "ingredient_hits":  ing_hits,
             "ingredient_score": round(ing_score, 3),
-            "keyword_score": round(kw_score, 3),
-            "unit_score": round(unit_score, 3),
-            "fraction_score": round(frac_score, 3),
+            "keyword_hits":     kw_hits,
+            "keyword_score":    round(kw_score, 3),
+            "unit_hits":        unit_hits,
+            "unit_score":       round(unit_score, 3),
+            "fraction_hits":    frac_hits + qty_hits,
+            "fraction_score":   round(frac_score, 3),
         }
     }
 
