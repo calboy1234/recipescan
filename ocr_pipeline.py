@@ -364,7 +364,7 @@ def ocr_image(path: str, file_hash: str, threshold: float) -> dict:
             f"(keywords={sig['keyword_score']:.2f}  "
             f"units={sig['unit_score']:.2f}  "
             f"fractions={sig['fraction_score']:.2f}  "
-            f"list={sig['list_score']:.2f})"
+            f"ingredients={sig['ingredient_score']:.2f})"
         )
 
         label = "RECIPE DETECTED — review in RecipeScan UI" if detection["score"] >= threshold else "not a recipe"

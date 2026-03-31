@@ -69,7 +69,7 @@ def get_setting(key: str, default):
 
 
 def get_threshold():
-    return get_setting("recipe_threshold", 0.75)
+    return get_setting("recipe_threshold", 0.60)
 
 
 # ── Gallery & image management ─────────────────────────────────────────────────

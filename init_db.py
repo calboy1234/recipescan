@@ -142,7 +142,7 @@ cur.execute("CREATE INDEX IF NOT EXISTS idx_failed_retried ON failed_images(retr
 cur.executemany(
     "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
     [
-        ("recipe_threshold",    "0.75"),
+        ("recipe_threshold",    "0.60"),
         # Number of parallel OCR threads.
         ("worker_count",        "4"),
         # Max futures submitted at once. Caps memory usage at scale.
