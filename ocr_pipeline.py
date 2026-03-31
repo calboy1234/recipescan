@@ -47,12 +47,12 @@ OMP_NUM_THREADS=1:
   fighting for CPU time and causing a context-switch death spiral. Capping to
   1 makes Python's ThreadPoolExecutor the sole concurrency layer.
 
-PSM 6 → PSM 4 with two-column detection:
-  PSM 6 ("single uniform block") reads horizontally across the full image
-  width, which merges both columns of a two-column ingredient list into each
-  line. PSM 4 reads a single column top-to-bottom. For images detected as
-  two-column, the image is split down the middle and each half is OCR'd
-  independently with PSM 4, then the results are re-joined.
+PSM 4 → PSM 11:
+  PSM 11 ("sparse text") finds as much text as possible in no particular
+  order, making no layout assumptions. This works better for recipe images
+  where text is scattered across the card rather than in a uniform block.
+  Two-column detection is retained — when a two-column layout is found the
+  image is split and each half is OCR'd independently with PSM 11.
 
 Busy-wait → concurrent.futures.wait():
   The old inner loop polled every pending future with f.done() and slept 50ms
@@ -238,7 +238,7 @@ def detect_column_split(img: PILImage.Image) -> bool:
     recipe-card layout (ingredients left, amounts right, or two ingredient
     columns) without requiring OpenCV.
 
-    Threshold is deliberately conservative — it's better to run PSM 4 on a
+    Threshold is deliberately conservative — it's better to run PSM 11 on a
     genuinely single-column image than to split a single column in half.
     """
     w, h  = img.size
@@ -270,25 +270,20 @@ def ocr_region(img: PILImage.Image, psm: int) -> str:
 
 def run_ocr(path: str, lines: list) -> tuple[str, int, float]:
     """
-    Open, preprocess, orient, then OCR the image with layout-aware PSM selection.
+    Open, preprocess, orient, then OCR the image with PSM 11.
 
     PSM strategy
     ------------
-    PSM 6 ("single uniform block") reads horizontally across the full image
-    width. For two-column recipe cards this merges both columns into each line,
-    destroying ingredient list structure entirely.
+    PSM 11 ("sparse text — find as much text as possible in no particular
+    order") is used throughout. It makes no assumptions about layout, reading
+    direction, or column structure, which suits recipe images well: text is
+    often scattered across the card in variable-size chunks (title, ingredient
+    list, instructions, margin notes) rather than forming a uniform block.
 
-    Instead:
-    - Detect whether the image has two side-by-side columns.
-    - If two-column: split the image down the middle, run PSM 4 ("single
-      column of variable-size text") on each half independently, then join
-      the results. Each column is read top-to-bottom correctly.
-    - If single-column: use PSM 4 directly, which handles variable font sizes
-      and mixed-case recipe text better than PSM 6.
-
-    PSM 4 is the right default for recipe cards: it tolerates mixed font
-    sizes (title vs. ingredient vs. instruction text) and doesn't assume a
-    rigid grid the way PSM 6 does.
+    Two-column detection is still performed. When a two-column layout is found
+    the image is split and each half is OCR'd independently with PSM 11 before
+    the results are joined. This reduces the chance of PSM 11 skipping text in
+    a dense two-column block by giving it a smaller, cleaner region to work on.
     """
     img  = PILImage.open(path)
     img  = ImageOps.exif_transpose(img)
@@ -317,8 +312,8 @@ def run_ocr(path: str, lines: list) -> tuple[str, int, float]:
         w, h      = grey.size
         left_half  = grey.crop((0,     0, w // 2, h))
         right_half = grey.crop((w // 2, 0, w,     h))
-        left_text  = ocr_region(left_half,  psm=4)
-        right_text = ocr_region(right_half, psm=4)
+        left_text  = ocr_region(left_half,  psm=11)
+        right_text = ocr_region(right_half, psm=11)
         # Interleave lines from each column so the combined text reads naturally
         left_lines  = left_text.splitlines()
         right_lines = right_text.splitlines()
@@ -332,8 +327,8 @@ def run_ocr(path: str, lines: list) -> tuple[str, int, float]:
         text = "\n".join(combined)
         lines.append(f"  layout    : two-column detected — split OCR applied")
     else:
-        text = ocr_region(grey, psm=4)
-        lines.append(f"  layout    : single-column (PSM 4)")
+        text = ocr_region(grey, psm=11)
+        lines.append(f"  layout    : single-column (PSM 11)")
 
     return text, angle, confidence
 
