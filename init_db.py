@@ -144,7 +144,7 @@ cur.executemany(
     [
         ("recipe_threshold",    "0.60"),
         # Number of parallel OCR threads.
-        ("worker_count",        "4"),
+        ("worker_count",        "2"),
         # Max futures submitted at once. Caps memory usage at scale.
         # 200 futures × ~a few MB each = well under 1 GB for large runs.
         ("batch_size",          "200"),

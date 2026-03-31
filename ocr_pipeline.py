@@ -106,8 +106,8 @@ PHOTO_DIR  = "/photos"
 DB_PATH    = "/data/database/recipescan.db"
 VALID_EXTS = (".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp")
 
-DEFAULT_THRESHOLD    = 0.75
-DEFAULT_WORKERS      = 4
+DEFAULT_THRESHOLD    = 0.60
+DEFAULT_WORKERS      = 2
 DEFAULT_BATCH_SIZE   = 200
 DEFAULT_COMMIT_EVERY = 50
 DEFAULT_LOG_KEEP     = 10
