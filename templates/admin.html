@@ -29,10 +29,70 @@
     No recipes are created — use RecipeScan to review, then TheRecipes to create recipes.
   </p>
 
-  <div class="gap" style="margin-bottom:1rem;">
+  <!-- Run options -->
+  <details style="margin-bottom:1rem;" {% if ocr_running %}style="pointer-events:none; opacity:.6;"{% endif %}>
+    <summary style="cursor:pointer; font-weight:500; margin-bottom:.75rem; user-select:none;">
+      Run options <span class="muted" style="font-weight:normal; font-size:.82rem;">(optional — leave blank to use saved defaults)</span>
+    </summary>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:.75rem 1.5rem; margin-top:.75rem;">
+
+      <div>
+        <label for="opt-dir-filter" style="display:block; font-size:.82rem; font-weight:500; margin-bottom:.25rem;">
+          Subdirectory filter
+        </label>
+        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">
+          Only scan this folder under <code>/photos</code>, e.g. <code>2024/june</code>.
+          Leave blank to scan everything.
+        </p>
+        <input type="text" id="opt-dir-filter" placeholder="e.g. 2024/june"
+               style="width:100%; padding:.3rem .45rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.85rem; box-sizing:border-box;" />
+      </div>
+
+      <div>
+        <label for="opt-limit" style="display:block; font-size:.82rem; font-weight:500; margin-bottom:.25rem;">
+          Image limit
+        </label>
+        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">
+          Stop after processing this many images. Useful for staged roll-outs or test runs.
+        </p>
+        <input type="number" id="opt-limit" min="1" placeholder="no limit"
+               style="width:100%; padding:.3rem .45rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.85rem; box-sizing:border-box;" />
+      </div>
+
+      <div>
+        <label for="opt-workers" style="display:block; font-size:.82rem; font-weight:500; margin-bottom:.25rem;">
+          Worker threads
+        </label>
+        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">
+          Overrides the saved default for this run only.
+        </p>
+        <input type="number" id="opt-workers" min="1" max="32" placeholder="use default"
+               style="width:100%; padding:.3rem .45rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.85rem; box-sizing:border-box;" />
+      </div>
+
+      <div>
+        <label for="opt-batch-size" style="display:block; font-size:.82rem; font-weight:500; margin-bottom:.25rem;">
+          Batch size
+        </label>
+        <p class="muted" style="font-size:.76rem; margin-bottom:.3rem;">
+          Overrides the saved default for this run only.
+        </p>
+        <input type="number" id="opt-batch-size" min="1" placeholder="use default"
+               style="width:100%; padding:.3rem .45rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.85rem; box-sizing:border-box;" />
+      </div>
+
+    </div>
+  </details>
+
+  <div class="gap" style="margin-bottom:1rem; align-items:center;">
     <button id="btn-run-ocr" class="btn btn-primary"
             onclick="startOCR()" {{ 'disabled' if ocr_running }}>
       {{ '⏳ Running…' if ocr_running else '▶ Run OCR Now' }}
+    </button>
+    <button id="btn-stop-ocr" class="btn btn-outline"
+            style="border-color:#c0392b; color:#c0392b; {{ 'display:none;' if not ocr_running }}"
+            onclick="stopOCR()">
+      ⏹ Stop
     </button>
     <span id="ocr-status" class="muted" style="font-size:.83rem;">
       {% if ocr_running %}Pipeline is currently running…{% endif %}
@@ -120,17 +180,30 @@ window.addEventListener('DOMContentLoaded', () => {
 
 function startOCR() {
   const btn    = document.getElementById('btn-run-ocr');
+  const stopBtn= document.getElementById('btn-stop-ocr');
   const status = document.getElementById('ocr-status');
   btn.disabled    = true;
   btn.textContent = '⏳ Running…';
+  stopBtn.style.display = '';
   status.textContent = 'Starting pipeline…';
   logEl.textContent  = '';
 
-  fetch('/admin/run-ocr', { method: 'POST' }).then(r => {
+  const body = new URLSearchParams();
+  const dirFilter  = document.getElementById('opt-dir-filter')?.value.trim();
+  const limit      = document.getElementById('opt-limit')?.value.trim();
+  const workers    = document.getElementById('opt-workers')?.value.trim();
+  const batchSize  = document.getElementById('opt-batch-size')?.value.trim();
+  if (dirFilter) body.append('dir_filter',  dirFilter);
+  if (limit)     body.append('limit',       limit);
+  if (workers)   body.append('workers',     workers);
+  if (batchSize) body.append('batch_size',  batchSize);
+
+  fetch('/admin/run-ocr', { method: 'POST', body }).then(r => {
     if (!r.ok && r.status !== 204) {
       appendLine('[error] Could not start OCR.');
       btn.disabled    = false;
       btn.textContent = '▶ Run OCR Now';
+      stopBtn.style.display = 'none';
       return;
     }
     status.textContent = 'Running…';
@@ -140,6 +213,7 @@ function startOCR() {
         es.close();
         btn.disabled    = false;
         btn.textContent = '▶ Run OCR Now';
+        stopBtn.style.display = 'none';
         status.textContent = 'Complete — refresh to update stats.';
       } else {
         appendLine(e.data);
@@ -150,9 +224,16 @@ function startOCR() {
       appendLine('\n[stream closed]');
       btn.disabled    = false;
       btn.textContent = '▶ Run OCR Now';
+      stopBtn.style.display = 'none';
       status.textContent = '';
     };
   });
+}
+
+function stopOCR() {
+  const status = document.getElementById('ocr-status');
+  status.textContent = 'Stop requested — finishing current image…';
+  fetch('/admin/stop-ocr', { method: 'POST' });
 }
 
 {% if ocr_running %}

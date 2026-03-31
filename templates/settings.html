@@ -4,6 +4,8 @@
 {% block content %}
 <h1 style="margin-bottom:1.5rem;">Settings</h1>
 
+<form action="/settings" method="post">
+
 <div class="card" style="max-width:540px;">
   <h2 style="margin-bottom:.5rem;">Recipe Detection Threshold</h2>
   <p class="muted" style="margin-bottom:1.25rem;">
@@ -13,40 +15,104 @@
     Takes effect on the next OCR pass.
   </p>
 
-  <form action="/settings" method="post">
-    <div class="form-group">
-      <label for="recipe_threshold">
-        Threshold —
-        <strong id="threshold-display">{{ (threshold|float * 100)|round|int }}%</strong>
-      </label>
-      <div style="display:flex; align-items:center; gap:1rem; margin-top:.5rem;">
-        <input type="range" id="threshold-slider" min="0" max="100" step="5"
-               value="{{ (threshold|float * 100)|round|int }}"
-               style="flex:1; accent-color:var(--accent);"
-               oninput="
-                 document.getElementById('threshold-display').textContent = this.value + '%';
-                 document.getElementById('slider-label').textContent = this.value + '%';
-                 document.getElementById('recipe_threshold').value = (this.value / 100).toFixed(2);
-               " />
-        <span id="slider-label" style="font-weight:bold; min-width:3rem; text-align:right;">
-          {{ (threshold|float * 100)|round|int }}%
-        </span>
-      </div>
-      <input type="hidden" id="recipe_threshold" name="recipe_threshold" value="{{ threshold }}" />
+  <div class="form-group">
+    <label for="recipe_threshold">
+      Threshold —
+      <strong id="threshold-display">{{ (threshold|float * 100)|round|int }}%</strong>
+    </label>
+    <div style="display:flex; align-items:center; gap:1rem; margin-top:.5rem;">
+      <input type="range" id="threshold-slider" min="0" max="100" step="5"
+             value="{{ (threshold|float * 100)|round|int }}"
+             style="flex:1; accent-color:var(--accent);"
+             oninput="
+               document.getElementById('threshold-display').textContent = this.value + '%';
+               document.getElementById('slider-label').textContent = this.value + '%';
+               document.getElementById('recipe_threshold').value = (this.value / 100).toFixed(2);
+             " />
+      <span id="slider-label" style="font-weight:bold; min-width:3rem; text-align:right;">
+        {{ (threshold|float * 100)|round|int }}%
+      </span>
     </div>
+    <input type="hidden" id="recipe_threshold" name="recipe_threshold" value="{{ threshold }}" />
+  </div>
 
-    <div style="display:flex; justify-content:space-between; font-size:.78rem; color:var(--muted); margin-bottom:1.25rem;">
-      <span>0% — flag everything</span>
-      <span style="color:#856404;">40% — permissive</span>
-      <span style="color:#1e8449;">75% — recommended</span>
-      <span>100% — nothing</span>
-    </div>
-
-    <button type="submit" class="btn btn-primary">Save</button>
-  </form>
+  <div style="display:flex; justify-content:space-between; font-size:.78rem; color:var(--muted); margin-bottom:1.25rem;">
+    <span>0% — flag everything</span>
+    <span style="color:#856404;">40% — permissive</span>
+    <span style="color:#1e8449;">75% — recommended</span>
+    <span>100% — nothing</span>
+  </div>
 </div>
 
 <div class="card" style="max-width:540px; margin-top:1.25rem;">
+  <h2 style="margin-bottom:.75rem;">Pipeline Defaults</h2>
+  <p class="muted" style="margin-bottom:1.25rem;">
+    These values are used for every OCR run unless overridden in the per-run
+    options on the Pipeline page.
+  </p>
+
+  <div class="form-group" style="margin-bottom:1rem;">
+    <label for="worker_count" style="display:block; margin-bottom:.3rem; font-weight:500;">
+      Worker threads
+    </label>
+    <p class="muted" style="font-size:.8rem; margin-bottom:.4rem;">
+      Number of images processed in parallel. A good starting point is the
+      number of CPU cores available. Higher values help on fast storage but
+      increase peak RAM usage.
+    </p>
+    <input type="number" id="worker_count" name="worker_count" min="1" max="32"
+           value="{{ settings.get('worker_count', '4') }}"
+           style="width:7rem; padding:.35rem .5rem; border:1px solid var(--border); border-radius:var(--radius);" />
+  </div>
+
+  <div class="form-group" style="margin-bottom:1rem;">
+    <label for="batch_size" style="display:block; margin-bottom:.3rem; font-weight:500;">
+      Batch size
+    </label>
+    <p class="muted" style="font-size:.8rem; margin-bottom:.4rem;">
+      Maximum number of futures kept in flight at once. Limits peak memory
+      when processing very large photo libraries.
+    </p>
+    <input type="number" id="batch_size" name="batch_size" min="1" max="10000"
+           value="{{ settings.get('batch_size', '200') }}"
+           style="width:7rem; padding:.35rem .5rem; border:1px solid var(--border); border-radius:var(--radius);" />
+  </div>
+
+  <div class="form-group" style="margin-bottom:1rem;">
+    <label for="commit_every" style="display:block; margin-bottom:.3rem; font-weight:500;">
+      Commit every N images
+    </label>
+    <p class="muted" style="font-size:.8rem; margin-bottom:.4rem;">
+      How often completed results are flushed to the database. Lower values
+      reduce data loss if the pipeline is interrupted; higher values reduce
+      write overhead on large runs.
+    </p>
+    <input type="number" id="commit_every" name="commit_every" min="1" max="1000"
+           value="{{ settings.get('commit_every', '50') }}"
+           style="width:7rem; padding:.35rem .5rem; border:1px solid var(--border); border-radius:var(--radius);" />
+  </div>
+
+  <div class="form-group" style="margin-bottom:1.25rem;">
+    <label for="log_retention_runs" style="display:block; margin-bottom:.3rem; font-weight:500;">
+      Log retention (runs)
+    </label>
+    <p class="muted" style="font-size:.8rem; margin-bottom:.4rem;">
+      Number of recent pipeline runs whose logs are kept. Logs for older runs
+      are pruned automatically after each run completes.
+    </p>
+    <input type="number" id="log_retention_runs" name="log_retention_runs" min="1" max="100"
+           value="{{ settings.get('log_retention_runs', '10') }}"
+           style="width:7rem; padding:.35rem .5rem; border:1px solid var(--border); border-radius:var(--radius);" />
+  </div>
+</div>
+
+<div style="max-width:540px; margin-top:1rem;">
+  <button type="submit" class="btn btn-primary">Save Settings</button>
+</div>
+
+</form>
+
+<div class="card" style="max-width:540px; margin-top:1.75rem;">
   <h2 style="margin-bottom:.5rem;">Score Reference</h2>
   <table style="width:100%; border-collapse:collapse; font-size:.83rem;">
     <tr style="background:#f5f5f2;">

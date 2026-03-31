@@ -194,11 +194,11 @@ def settings():
     if request.method == "POST":
         updates = {}
 
-        threshold = request.form.get("recipe_threshold", "0.75")
+        threshold = request.form.get("recipe_threshold", "0.60")
         try:
             updates["recipe_threshold"] = str(max(0.0, min(1.0, float(threshold))))
         except ValueError:
-            updates["recipe_threshold"] = "0.75"
+            updates["recipe_threshold"] = "0.60"
 
         for key, default in [("worker_count", "4"), ("batch_size", "200"),
                               ("commit_every", "50"), ("log_retention_runs", "10")]:
@@ -219,7 +219,8 @@ def settings():
     rows = conn.execute("SELECT key, value FROM settings ORDER BY key").fetchall()
     conn.close()
     settings_dict = {r["key"]: r["value"] for r in rows}
-    return render_template("settings.html", settings=settings_dict)
+    return render_template("settings.html", settings=settings_dict,
+                           threshold=settings_dict.get("recipe_threshold", "0.60"))
 
 
 # ── Admin: dashboard ───────────────────────────────────────────────────────────
@@ -649,7 +650,7 @@ def export():
     writer.writerow([
         "id", "file_path", "file_hash", "is_reviewed", "added_at",
         "recipe_score", "rotation_corrected",
-        "keyword_score", "unit_score", "fraction_score", "list_score",
+        "ingredient_score", "keyword_score", "unit_score", "fraction_score",
     ])
     for r in rows:
         signals = {}
@@ -661,10 +662,10 @@ def export():
         writer.writerow([
             r["id"], r["file_path"], r["file_hash"], r["is_reviewed"], r["added_at"],
             r["recipe_score"], r["rotation_corrected"],
+            signals.get("ingredient_score", ""),
             signals.get("keyword_score", ""),
             signals.get("unit_score", ""),
             signals.get("fraction_score", ""),
-            signals.get("list_score", ""),
         ])
 
     output.seek(0)
