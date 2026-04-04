@@ -47,24 +47,25 @@ OMP_NUM_THREADS=1:
   fighting for CPU time and causing a context-switch death spiral. Capping to
   1 makes Python's ThreadPoolExecutor the sole concurrency layer.
 
-PSM 4 → PSM 11:
-  PSM 11 ("sparse text") finds as much text as possible in no particular
-  order, making no layout assumptions. This works better for recipe images
-  where text is scattered across the card rather than in a uniform block.
-  Two-column detection is retained — when a two-column layout is found the
-  image is split and each half is OCR'd independently with PSM 11.
+PSM 11 → PSM 3:
+  PSM 3 ("fully automatic page segmentation") was selected by automated
+  grid-search as the best-performing PSM across 13 real recipe images
+  (mean_zscore=0.745, mean_conf=90.0). Previous versions used PSM 11
+  ("sparse text"); the search found PSM 3 achieves higher real-word ratio
+  and Tesseract confidence on this image set.
 
 Busy-wait → concurrent.futures.wait():
   The old inner loop polled every pending future with f.done() and slept 50ms
   if none were ready — burning CPU constantly. Replaced with wait(FIRST_COMPLETED)
   which blocks in the OS until a future actually finishes.
 
-Enhanced preprocessing:
-  Uses cv2.adaptiveThreshold (the gold standard for document binarization)
-  instead of the PIL-only contrast/autocontrast approach. Adaptive thresholding
-  computes a separate threshold per image region, handling shadows, glare, and
-  yellowing that defeat global thresholding. GaussianBlur runs first to suppress
-  sensor noise before thresholding amplifies it.
+Optimised preprocessing:
+  Automated grid-search over 13 recipe images found that a simple global
+  greyscale threshold at level 160 (gray_thresh160) outperforms adaptive
+  thresholding on this image set. Recipe card photos have high-contrast
+  ink on light paper; the spatial complexity of adaptive thresholding
+  amplifies sensor noise rather than helping. cv2 and numpy are no longer
+  required by the preprocessing step and have been removed as dependencies.
 
 detect_rotation robustness:
   Explicit guard on osd variable presence before regex matching ensures that
@@ -88,8 +89,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 from PIL import Image as PILImage, ImageOps
-import cv2
-import numpy as np
 import pytesseract
 from pytesseract import Output
 
@@ -135,7 +134,33 @@ def list_photo_sources() -> list[str]:
     )
 OSD_TIMEOUT = 10   # seconds before OSD is abandoned and rotation skipped
 OCR_TIMEOUT = 60   # seconds before an OCR call is killed and the image errors
-OCR_PSM     = 11   # Tesseract page segmentation mode — 11 = sparse text, no layout assumptions
+
+# ── OCR settings (derived from automated parameter search) ─────────────────────
+#
+# These values were selected by an exhaustive grid-search test suite that scored
+# every (scale, psm, oem, preprocess, invert, preserve_spaces, extra_config)
+# combination across 13 real recipe images using a composite metric of
+# real-word ratio, Tesseract confidence, garbage ratio, and repeat-char ratio.
+#
+# Winning config (rank 1, mean_zscore=0.745, mean_conf=90.0, real_word_ratio=0.799):
+#   preprocess : gray_thresh160   (grayscale → global threshold at 160)
+#   psm        : 3                (fully automatic page segmentation)
+#   oem        : 3                (default — LSTM + Legacy)
+#   preserve_spaces : True        (-c preserve_interword_spaces=1)
+#   extra_config    : -c textord_heavy_nr=1
+#   invert     : False  (no inversion)
+#   scale      : 1.0   (no rescaling)
+#
+# Previous pipeline used adaptive thresholding (gray_gaussian_adaptive) and
+# PSM 11 (sparse text).  The search found that a simple global threshold at
+# grey-level 160 outperforms adaptive thresholding on this image set because
+# recipe card photos typically have high-contrast dark ink on light paper;
+# the spatial variation that adaptive thresholding is designed to handle is
+# less of an issue here than the noise amplification it introduces.
+OCR_PSM              = 3     # page segmentation: fully automatic
+OCR_OEM              = 3     # OCR engine: LSTM + Legacy (Tesseract default)
+OCR_PRESERVE_SPACES  = True  # preserve inter-word spacing in output
+OCR_EXTRA_CONFIG     = "-c textord_heavy_nr=1"  # suppress heavy noise regions
 
 
 # ── Settings helpers ───────────────────────────────────────────────────────────
@@ -192,43 +217,29 @@ def detect_rotation(img: PILImage.Image) -> tuple[int, float]:
 
 def preprocess(img: PILImage.Image) -> PILImage.Image:
     """
-    Greyscale → denoise → adaptive binarization.
+    Greyscale → global threshold at level 160 (gray_thresh160).
 
-    cv2.adaptiveThreshold computes a separate threshold for every small
-    neighbourhood of the image rather than one global value. This handles
-    the uneven lighting, shadows, and yellowing that are common in phone
-    photos of physical recipe cards — conditions where a global threshold
-    leaves shadow regions muddy or blows out bright regions entirely.
+    Selected by automated grid-search as the top-performing preprocessing
+    pipeline across 13 recipe images (mean_zscore=0.745, mean_conf=90.0,
+    real_word_ratio=0.799).
 
     Pipeline:
-      1. Convert PIL → numpy greyscale array (cv2 works on numpy uint8).
-      2. GaussianBlur kernel (3×3) to suppress sensor noise before thresholding.
-         Blur must come first — thresholding after noise amplifies the noise.
-      3. adaptiveThreshold with ADAPTIVE_THRESH_GAUSSIAN_C:
-           - blockSize=31  — neighbourhood diameter in pixels. Larger values
-             tolerate broader lighting gradients; 31px is a good fit for
-             recipe card text at typical phone-photo resolutions.
-           - C=10          — constant subtracted from the local mean before
-             thresholding. Higher values are more aggressive at calling pixels
-             "background"; 10 is a safe middle ground for faded ink on paper.
-      4. Convert result back to PIL for the rest of the pipeline (rotation,
-         column detection, Tesseract call).
+      1. Convert to greyscale (mode "L").
+      2. Apply a global point threshold: pixels with value ≥ 160 → 255 (white),
+         pixels with value < 160 → 0 (black).
 
-    The output is a pure black-and-white image (0 or 255 per pixel), which
-    is exactly what Tesseract's internal binarizer would try to produce anyway
-    — we're just doing it better with more spatial context.
+    Why a global threshold beats adaptive here:
+      Recipe card photos typically feature high-contrast dark ink on light
+      paper.  Adaptive thresholding computes a per-region threshold to handle
+      uneven lighting and shadows, but on this image set that extra complexity
+      amplifies sensor noise rather than suppressing it.  A single grey-level
+      cutoff at 160 is sufficient to cleanly separate ink from background and
+      avoids the noise artefacts that hurt adaptive thresholding's scores.
+
+    The output is a pure black-and-white image (0 or 255 per pixel).
     """
-    arr = np.array(img.convert("L"))
-    arr = cv2.GaussianBlur(arr, (3, 3), 0)
-    arr = cv2.adaptiveThreshold(
-        arr,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        blockSize=31,
-        C=10,
-    )
-    return PILImage.fromarray(arr)
+    grey = img.convert("L")
+    return grey.point(lambda p: 255 if p >= 160 else 0).convert("L")
 
 
 def ocr_with_confidence(img: PILImage.Image, psm: int) -> tuple[str, float]:
@@ -246,9 +257,16 @@ def ocr_with_confidence(img: PILImage.Image, psm: int) -> tuple[str, float]:
     recipe_detector relies on (ingredient lists, keyword density per line)
     rather than collapsing everything into a single space-separated string.
     """
+    parts = [f"--oem {OCR_OEM}", f"--psm {psm}"]
+    if OCR_PRESERVE_SPACES:
+        parts.append("-c preserve_interword_spaces=1")
+    if OCR_EXTRA_CONFIG:
+        parts.append(OCR_EXTRA_CONFIG)
+    tess_config = " ".join(parts)
+
     data = pytesseract.image_to_data(
         img,
-        config=f"--psm {psm}",
+        config=tess_config,
         output_type=Output.DICT,
         timeout=OCR_TIMEOUT,
     )
@@ -273,19 +291,18 @@ def ocr_with_confidence(img: PILImage.Image, psm: int) -> tuple[str, float]:
 
 def run_ocr(path: str, lines: list) -> tuple[str, int, float, float]:
     """
-    Open, preprocess, orient, then OCR the image with PSM 11.
+    Open, preprocess, orient, then OCR the image with PSM 3.
 
     Returns (text, angle_corrected, osd_confidence, word_confidence).
 
     PSM strategy
     ------------
-    PSM 11 ("sparse text — find as much text as possible in no particular
-    order") is used throughout. It makes no assumptions about layout, reading
-    direction, or column structure, which suits recipe images well: text is
-    often scattered across the card in variable-size chunks (title, ingredient
-    list, instructions, margin notes) rather than forming a uniform block.
-    Column splitting is no longer needed — PSM 11 handles multi-column
-    layouts natively without any heuristic pre-detection.
+    PSM 3 ("fully automatic page segmentation") is used throughout.  It
+    was selected by automated grid-search as the best-performing PSM for
+    this image set (mean_zscore=0.745).  PSM 3 lets Tesseract detect the
+    page orientation and script before segmenting, which works well for
+    recipe images that typically have a clear dominant text block (even if
+    that block is a multi-column ingredient list).
 
     Memory management
     -----------------
