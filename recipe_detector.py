@@ -2,7 +2,7 @@ import re
 import unicodedata
 
 # ── Tuneable threshold ────────────────────────────────────────────────────────
-RECIPE_THRESHOLD = 0.65 
+RECIPE_THRESHOLD = 0.60 
 
 # ── Signal patterns ───────────────────────────────────────────────────────────
 

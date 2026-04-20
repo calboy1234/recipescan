@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS ocr_results (
     text               TEXT,
     osd_confidence     REAL DEFAULT 0.0,
     word_confidence    REAL DEFAULT 0.0,
-    psm                INTEGER DEFAULT 11,
+    psm                INTEGER DEFAULT 3,
     recipe_score       REAL DEFAULT 0.0,
     signals            TEXT,
     rotation_corrected INTEGER DEFAULT 0,
@@ -143,8 +143,8 @@ if "osd_confidence" not in _ocr_cols:
     print("Migration: added 'osd_confidence' to ocr_results.")
 
 if "psm" not in _ocr_cols:
-    cur.execute("ALTER TABLE ocr_results ADD COLUMN psm INTEGER DEFAULT 11")
-    print("Migration: added 'psm' to ocr_results (existing rows default to 11).")
+    cur.execute("ALTER TABLE ocr_results ADD COLUMN psm INTEGER DEFAULT 3")
+    print("Migration: added 'psm' to ocr_results (existing rows default to 3).")
 
 _run_cols = {row[1] for row in cur.execute("PRAGMA table_info(ocr_runs)").fetchall()}
 if "total" not in _run_cols:

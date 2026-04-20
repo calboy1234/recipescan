@@ -1,4 +1,5 @@
 __pycache__/
+Tesseract_Testing_Suite/
 *.pyc
 *.db
 *.db-shm

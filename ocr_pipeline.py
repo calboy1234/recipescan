@@ -86,6 +86,7 @@ import sqlite3
 import hashlib
 import statistics
 import threading
+from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 from PIL import Image as PILImage, ImageOps
@@ -238,8 +239,7 @@ def preprocess(img: PILImage.Image) -> PILImage.Image:
 
     The output is a pure black-and-white image (0 or 255 per pixel).
     """
-    grey = img.convert("L")
-    return grey.point(lambda p: 255 if p >= 160 else 0).convert("L")
+    return img.convert("L").point(lambda p: 255 if p >= 160 else 0)
 
 
 def ocr_with_confidence(img: PILImage.Image, psm: int) -> tuple[str, float]:
@@ -291,7 +291,7 @@ def ocr_with_confidence(img: PILImage.Image, psm: int) -> tuple[str, float]:
 
 def run_ocr(path: str, lines: list) -> tuple[str, int, float, float]:
     """
-    Open, preprocess, orient, then OCR the image with PSM 3.
+    Open, orient, preprocess, then OCR the image with PSM 3.
 
     Returns (text, angle_corrected, osd_confidence, word_confidence).
 
@@ -316,15 +316,17 @@ def run_ocr(path: str, lines: list) -> tuple[str, int, float, float]:
         img.load()          # force pixel data into memory before file closes
     # 'raw' file handle is now closed; 'img' owns its pixel data
 
-    grey = preprocess(img)
-    img.close()             # original no longer needed after binarization
+    # detect_rotation is run on the grayscale version of the image.
+    # Orientation detection is more reliable on grayscale than on binarized
+    # images, where important anti-aliasing details are lost.
+    grey = img.convert("L")
 
     osd_conf: float
     angle, osd_conf = detect_rotation(grey)
 
     if angle != 0:
         rotated = grey.rotate(angle, expand=True)
-        grey.close()        # discard un-rotated version
+        grey.close()
         grey = rotated
         lines.append(
             f"  rotation  : {angle}° corrected  "
@@ -340,8 +342,13 @@ def run_ocr(path: str, lines: list) -> tuple[str, int, float, float]:
     else:
         lines.append("  rotation  : OSD unavailable or image has too little text")
 
-    text, word_conf = ocr_with_confidence(grey, psm=OCR_PSM)
-    grey.close()            # preprocessed image no longer needed
+    # Final preprocessing (binarization) happens AFTER rotation.
+    binarized = preprocess(grey)
+    grey.close()
+    img.close()
+
+    text, word_conf = ocr_with_confidence(binarized, psm=OCR_PSM)
+    binarized.close()
 
     return text, angle, osd_conf, word_conf
 
@@ -459,8 +466,14 @@ def write_result(cur: sqlite3.Cursor, result: dict) -> str:
     return "processed"
 
 
-def write_failure(cur: sqlite3.Cursor, run_id: int, result: dict):
+def write_failure(cur: sqlite3.Cursor, run_id: Optional[int], result: dict):
     """Record a failed image in failed_images for later retry."""
+    # When running from the CLI (run_id=None), we still want to record 
+    # failures if possible, but the foreign key constraint on run_id 
+    # must be respected. We only insert if we have a valid run_id.
+    if run_id is None:
+        return
+
     cur.execute(
         """
         INSERT INTO failed_images (run_id, file_path, file_hash, error_msg)
@@ -591,9 +604,8 @@ def main(
             "SELECT DISTINCT file_path, file_hash FROM failed_images WHERE retried = 0"
         ).fetchall()
         to_process = [(r[0], r[1]) for r in rows if r[1]]
-        # Mark them as retried so they aren't re-queued by future retry runs
-        conn.execute("UPDATE failed_images SET retried=1 WHERE retried=0")
-        conn.commit()
+        # We no longer mark as retried here; it's done after processing each image 
+        # in the loop below to ensure crashed runs don't lose images.
         log_db("  Mode       : RETRY FAILED IMAGES")
     else:
         # Normal scan: collect image paths from one, some, or all sources.
@@ -740,16 +752,23 @@ def main(
 
                     if result["status"] == "error":
                         errors += 1
-                        write_failure(cur, run_id or 0, result)
+                        write_failure(cur, run_id, result)
+
+                    # Mark as retried in failed_images regardless of success/failure
+                    cur.execute(
+                        "UPDATE failed_images SET retried = 1 WHERE file_path = ? AND retried = 0",
+                        (path,)
+                    )
 
                 except Exception as exc:
                     log_db(f"[error] {path}: {exc}")
                     errors += 1
-                    write_failure(cur, run_id or 0, {
+                    write_failure(cur, run_id, {
                         "path": path,
                         "file_hash": file_hash,
-                        "error_msg": str(exc),
+                        "error_msg": str(exc)
                     })
+
 
                 # Commit on schedule
                 commit_buf += 1

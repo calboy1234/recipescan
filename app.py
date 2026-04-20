@@ -712,7 +712,8 @@ def export():
 
     rows = conn.execute(
         "SELECT i.id, i.file_path, i.file_hash, i.is_reviewed, i.added_at,"
-        "       o.recipe_score, o.signals, o.text, o.rotation_corrected "
+        "       o.recipe_score, o.signals, o.text, o.rotation_corrected, "
+        "       o.osd_confidence, o.word_confidence, o.psm "
         "FROM images i "
         "LEFT JOIN ocr_results o ON i.id = o.image_id "
         "WHERE " + where + " "
@@ -742,7 +743,7 @@ def export():
     writer = csv.writer(output)
     writer.writerow([
         "id", "file_path", "file_hash", "is_reviewed", "added_at",
-        "recipe_score", "rotation_corrected",
+        "recipe_score", "rotation_corrected", "osd_confidence", "word_confidence", "psm",
         "ingredient_score", "keyword_score", "unit_score", "fraction_score",
     ])
     for r in rows:
@@ -755,6 +756,7 @@ def export():
         writer.writerow([
             r["id"], r["file_path"], r["file_hash"], r["is_reviewed"], r["added_at"],
             r["recipe_score"], r["rotation_corrected"],
+            r["osd_confidence"], r["word_confidence"], r["psm"],
             signals.get("ingredient_score", ""),
             signals.get("keyword_score", ""),
             signals.get("unit_score", ""),

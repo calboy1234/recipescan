@@ -46,7 +46,7 @@
           ('Rotation corrected', (angle|string + '°') if angle else 'None'),
           ('OSD confidence',     ('%.2f'|format(o['osd_confidence']|float)) if o['osd_confidence'] else '—'),
           ('Word confidence',    ('%.0f%%'|format(o['word_confidence']|float)) if o['word_confidence'] else '—'),
-          ('PSM used',           'PSM ' + (o['psm']|string) + ' — sparse text' if o['psm'] else '—'),
+          ('PSM used',           'PSM ' + (o['psm']|string) + (' — sparse text' if o['psm'] == 11 else ' — automatic' if o['psm'] == 3 else '') if o['psm'] else '—'),
           ('Scanned',            o['created_at']),
           ('OCR engine',         o['engine'] | title),
         ] %}
