@@ -1,3 +1,4 @@
+.gemini/
 __pycache__/
 Tesseract_Testing_Suite/
 *.pyc
