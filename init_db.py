@@ -115,6 +115,11 @@ if "is_reviewed" not in _img_cols:
     cur.execute("ALTER TABLE images ADD COLUMN is_reviewed INTEGER DEFAULT 0")
     print("Migration: added 'is_reviewed' to images.")
 
+if "captured_at" not in _img_cols:
+    cur.execute("ALTER TABLE images ADD COLUMN captured_at TEXT")
+    cur.execute("UPDATE images SET captured_at = added_at WHERE captured_at IS NULL")
+    print("Migration: added 'captured_at' to images and populated from added_at.")
+
 _ocr_cols = {row[1] for row in cur.execute("PRAGMA table_info(ocr_results)").fetchall()}
 if "ocr_confidence" not in _ocr_cols:
     cur.execute("ALTER TABLE ocr_results ADD COLUMN ocr_confidence REAL DEFAULT 0.0")
@@ -145,6 +150,14 @@ if "osd_confidence" not in _ocr_cols:
 if "psm" not in _ocr_cols:
     cur.execute("ALTER TABLE ocr_results ADD COLUMN psm INTEGER DEFAULT 3")
     print("Migration: added 'psm' to ocr_results (existing rows default to 3).")
+
+if "oem" not in _ocr_cols:
+    cur.execute("ALTER TABLE ocr_results ADD COLUMN oem INTEGER DEFAULT 3")
+    print("Migration: added 'oem' to ocr_results (existing rows default to 3).")
+
+if "run_id" not in _ocr_cols:
+    cur.execute("ALTER TABLE ocr_results ADD COLUMN run_id INTEGER REFERENCES ocr_runs(id)")
+    print("Migration: added 'run_id' to ocr_results.")
 
 _run_cols = {row[1] for row in cur.execute("PRAGMA table_info(ocr_runs)").fetchall()}
 if "total" not in _run_cols:

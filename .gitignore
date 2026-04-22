@@ -6,3 +6,4 @@ Tesseract_Testing_Suite/
 *.db-shm
 *.db-wal
 .env
+exiftool/

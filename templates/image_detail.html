@@ -47,8 +47,10 @@
           ('OSD confidence',     ('%.2f'|format(o['osd_confidence']|float)) if o['osd_confidence'] else '—'),
           ('Word confidence',    ('%.0f%%'|format(o['word_confidence']|float)) if o['word_confidence'] else '—'),
           ('PSM used',           'PSM ' + (o['psm']|string) + (' — sparse text' if o['psm'] == 11 else ' — automatic' if o['psm'] == 3 else '') if o['psm'] else '—'),
+          ('OEM used',           'OEM ' + (o['oem']|string) if o['oem'] else '—'),
           ('Scanned',            o['created_at']),
           ('OCR engine',         o['engine'] | title),
+          ('Run ID',             ('#' + o['run_id']|string) if o['run_id'] else '—'),
         ] %}
         <tr style="border-top:1px solid var(--border);">
           <td style="padding:.28rem .5rem .28rem 0; color:var(--muted); white-space:nowrap;">{{ label }}</td>

@@ -114,6 +114,7 @@ def index():
     page       = request.args.get("page", 1, type=int)
     filter_val = request.args.get("filter", "all")
     sort_val   = request.args.get("sort", _DEFAULT_SORT)
+    group_val  = request.args.get("group", "none")
 
     # Validate both against known safe sets
     if filter_val not in _GALLERY_FILTERS:
@@ -125,7 +126,11 @@ def index():
     if params is None:
         params = [threshold]
 
-    order_by = _SORT_OPTIONS[sort_val]   # safe: hardcoded strings only
+    # When grouping by session, we must sort by captured_at to ensure clusters are adjacent
+    if group_val == "session":
+        order_by = "img.captured_at DESC, img.id DESC"
+    else:
+        order_by = _SORT_OPTIONS[sort_val]   # safe: hardcoded strings only
 
     conn = get_db()
 
@@ -141,7 +146,7 @@ def index():
     offset      = (page - 1) * ITEMS_PER_PAGE
 
     rows = conn.execute(
-        "SELECT img.id, img.file_path, img.is_reviewed, img.added_at,"
+        "SELECT img.id, img.file_path, img.is_reviewed, img.added_at, img.captured_at,"
         "       ocr.id as ocr_id, ocr.recipe_score "
         "FROM images img "
         "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
@@ -151,11 +156,47 @@ def index():
         params + [ITEMS_PER_PAGE, offset],
     ).fetchall()
 
+    # Clustering logic for session view
+    grouped_rows = []
+    if group_val == "session" and rows:
+        from datetime import datetime
+        current_group = {"time": rows[0]["captured_at"], "items": [rows[0]]}
+        grouped_rows.append(current_group)
+        
+        last_time = None
+        try:
+            last_time = datetime.strptime(rows[0]["captured_at"], "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            pass
+
+        for i in range(1, len(rows)):
+            row = rows[i]
+            row_time = None
+            try:
+                row_time = datetime.strptime(row["captured_at"], "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                pass
+            
+            is_new_group = True
+            if last_time and row_time:
+                diff = abs((last_time - row_time).total_seconds())
+                if diff < 300: # 5 minutes
+                    is_new_group = False
+            
+            if is_new_group:
+                current_group = {"time": row["captured_at"], "items": [row]}
+                grouped_rows.append(current_group)
+            else:
+                current_group["items"].append(row)
+            
+            if row_time:
+                last_time = row_time
+
     conn.close()
     return render_template(
         "index.html",
-        rows=rows, total=total, page=page, total_pages=total_pages,
-        filter_val=filter_val, sort_val=sort_val, threshold=threshold,
+        rows=rows, grouped_rows=grouped_rows, total=total, page=page, total_pages=total_pages,
+        filter_val=filter_val, sort_val=sort_val, group_val=group_val, threshold=threshold,
     )
 
 
@@ -335,6 +376,66 @@ def admin():
         ocr_run_id=ocr_run_id,
         settings=settings_dict, threshold=threshold,
     )
+
+
+@app.route("/admin/stats")
+def admin_stats():
+    conn = get_db()
+    threshold = get_threshold()
+
+    stats = {}
+    
+    # 1. Image coverage
+    total_images = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+    scanned_images = conn.execute("SELECT COUNT(*) FROM ocr_results").fetchone()[0]
+    stats["coverage"] = {
+        "total": total_images,
+        "scanned": scanned_images,
+        "unscanned": total_images - scanned_images
+    }
+
+    # 2. Recipe Detection
+    detected = conn.execute(
+        "SELECT COUNT(*) FROM ocr_results WHERE recipe_score >= ?", (threshold,)
+    ).fetchone()[0]
+    stats["recipes"] = {
+        "detected": detected,
+        "not_detected": scanned_images - detected
+    }
+
+    # 3. Score distribution (Histogram)
+    # Group scores into 10 bins: 0.0-0.1, 0.1-0.2, ... 0.9-1.0
+    distribution = conn.execute("""
+        SELECT CAST(recipe_score * 10 AS INTEGER) as bin, COUNT(*) as count
+        FROM ocr_results
+        GROUP BY bin
+        ORDER BY bin ASC
+    """).fetchall()
+    
+    dist_data = [0] * 11
+    for row in distribution:
+        bin_idx = min(row["bin"], 10)
+        dist_data[bin_idx] = row["count"]
+    stats["distribution"] = dist_data
+
+    # 4. Processing History (last 10 runs)
+    runs = conn.execute("""
+        SELECT id, started_at, processed, errors 
+        FROM ocr_runs 
+        WHERE status='complete' 
+        ORDER BY started_at DESC LIMIT 10
+    """).fetchall()
+    stats["history"] = [dict(r) for r in reversed(runs)]
+
+    # 5. Review Progress
+    reviewed = conn.execute("SELECT COUNT(*) FROM images WHERE is_reviewed = 1").fetchone()[0]
+    stats["review"] = {
+        "reviewed": reviewed,
+        "unreviewed": total_images - reviewed
+    }
+
+    conn.close()
+    return render_template("stats.html", stats=stats, threshold=threshold)
 
 
 # ── Admin: list photo sources ─────────────────────────────────────────────────

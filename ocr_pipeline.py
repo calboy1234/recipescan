@@ -86,6 +86,8 @@ import sqlite3
 import hashlib
 import statistics
 import threading
+import subprocess
+from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
@@ -180,6 +182,49 @@ def _get_setting(conn: sqlite3.Connection, key: str, default):
 
 
 # ── Utilities ──────────────────────────────────────────────────────────────────
+
+def get_exif_tool_path():
+    """Return the path to exiftool, checking for local Windows exe first."""
+    if os.name == 'nt':
+        local_path = os.path.join(os.path.dirname(__file__), "exiftool", "exiftool.exe")
+        if os.path.exists(local_path):
+            return local_path
+    return "exiftool"  # assume in PATH (Linux/Docker)
+
+
+def extract_capture_time(path: str) -> str:
+    """
+    Extract 'Date Taken' using exiftool, falling back to file mtime.
+    Returns a string in YYYY-MM-DD HH:MM:SS format.
+    """
+    try:
+        et = get_exif_tool_path()
+        # Tags to check: DateTimeOriginal, CreateDate, ModifyDate
+        cmd = [et, "-s3", "-DateTimeOriginal", "-CreateDate", "-ModifyDate", path]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        
+        # Take the first non-empty line
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if lines:
+            # Exiftool format is often '2023:05:20 14:30:00'
+            raw_ts = lines[0]
+            try:
+                # Try to normalize to YYYY-MM-DD HH:MM:SS
+                dt = datetime.strptime(raw_ts[:19], "%Y:%m:%d %H:%M:%S")
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                return raw_ts
+
+    except Exception:
+        pass
+
+    # Fallback to file mtime
+    try:
+        mtime = os.path.getmtime(path)
+        return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
 def hash_file(path: str) -> str:
     h = hashlib.sha256()
@@ -367,11 +412,13 @@ def ocr_image(path: str, file_hash: str, threshold: float) -> dict:
         "osd_confidence": 0.0, "word_confidence": 0.0,
         "recipe_score": 0.0, "signals": {},
         "file_size": 0, "dimensions": "unknown",
+        "captured_at": None,
         "ocr_time": 0.0, "error_msg": "",
     }
 
     try:
         result["file_size"] = os.path.getsize(path)
+        result["captured_at"] = extract_capture_time(path)
 
         try:
             with PILImage.open(path) as probe:
@@ -432,7 +479,7 @@ def ocr_image(path: str, file_hash: str, threshold: float) -> dict:
 
 # ── DB writes (caller's thread only) ──────────────────────────────────────────
 
-def write_result(cur: sqlite3.Cursor, result: dict) -> str:
+def write_result(cur: sqlite3.Cursor, result: dict, run_id: Optional[int]) -> str:
     """Write a completed OCR result. Returns 'processed', 'skipped', or 'error'."""
     if result["status"] == "error":
         return "error"
@@ -442,8 +489,8 @@ def write_result(cur: sqlite3.Cursor, result: dict) -> str:
         return "skipped"
 
     cur.execute(
-        "INSERT INTO images (file_path, file_hash) VALUES (?, ?)",
-        (result["path"], result["file_hash"]),
+        "INSERT INTO images (file_path, file_hash, captured_at) VALUES (?, ?, ?)",
+        (result["path"], result["file_hash"], result["captured_at"]),
     )
     image_id = cur.lastrowid
 
@@ -451,16 +498,16 @@ def write_result(cur: sqlite3.Cursor, result: dict) -> str:
         """
         INSERT INTO ocr_results
             (image_id, engine, text, osd_confidence, word_confidence,
-             psm, recipe_score, signals, rotation_corrected)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             psm, oem, recipe_score, signals, rotation_corrected, run_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             image_id, "tesseract", result["text"],
             round(result.get("osd_confidence", 0.0), 2),
             result.get("word_confidence", 0.0),
-            OCR_PSM,
+            OCR_PSM, OCR_OEM,
             result["recipe_score"], json.dumps(result["signals"]),
-            result["angle"],
+            result["angle"], run_id
         ),
     )
     return "processed"
@@ -740,7 +787,7 @@ def main(
                     # rows) and replaces the old log_conn-per-line commits.
                     conn.commit()
 
-                    outcome = write_result(cur, result)
+                    outcome = write_result(cur, result, run_id)
 
                     if outcome == "processed":
                         processed += 1

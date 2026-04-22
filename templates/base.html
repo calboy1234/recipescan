@@ -173,7 +173,8 @@
     <span class="logo">📷 RecipeScan</span>
   </a>
   <a href="/"      class="nav-link {{ 'active' if request.path == '/' or request.path.startswith('/image') or request.path.startswith('/photo') }}">Images</a>
-  <a href="/admin" class="nav-link {{ 'active' if request.path.startswith('/admin') }}">Pipeline</a>
+  <a href="/admin" class="nav-link {{ 'active' if request.path == '/admin' }}">Pipeline</a>
+  <a href="/admin/stats" class="nav-link {{ 'active' if request.path == '/admin/stats' }}">Stats</a>
 </nav>
 <main>
   {% block content %}{% endblock %}
