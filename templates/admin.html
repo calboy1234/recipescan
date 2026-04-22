@@ -180,30 +180,16 @@
   </div>
 </div>
 
-<!-- ── Clear scans ── -->
-<div class="card" style="margin-bottom:1.25rem;">
-  <h2 style="margin-bottom:.5rem;">Clear Scan Data</h2>
-  <p class="muted" style="margin-bottom:1rem;">
-    Deletes all images, OCR results, and run logs. Review status is lost.
-    Your photo files are not affected.
-  </p>
-  <button type="button" class="btn btn-outline" style="border-color:#e67e22; color:#e67e22;"
-          onclick="showConfirmModal('clear')">
-    🗑 Clear All Scan Data
-  </button>
-  <form id="form-clear-scans" action="/admin/clear-scans" method="post" style="display:none;"></form>
-</div>
-
-<!-- ── Full reset ── -->
 <div class="card" style="border-color:#c0392b;">
-  <h2 style="margin-bottom:.5rem; color:#c0392b;">Full Database Reset</h2>
+  <h2 style="margin-bottom:.5rem; color:#c0392b;">Reset Database</h2>
   <p class="muted" style="margin-bottom:1rem;">
-    Wipes all tables including settings, then re-initialises with defaults.
+    Deletes the RecipeScan database files and re-initialises a brand new database with default settings.
+    OCR results, run history, review status, and settings will all be lost.
     <strong>Cannot be undone.</strong>
   </p>
   <button type="button" class="btn btn-danger"
           onclick="showConfirmModal('reset')">
-    ⚠ Full Database Reset
+    ⚠ Reset Database
   </button>
   <form id="form-reset-db" action="/admin/reset-db" method="post" style="display:none;"></form>
 </div>
@@ -445,15 +431,9 @@ document.addEventListener('DOMContentLoaded', () => {
 let _modalTarget = null;
 
 const MODAL_CONFIG = {
-  clear: {
-    title: '🗑 Clear All Scan Data?',
-    body:  'This will delete all scanned images, OCR results, run logs, and review status. Your photo files are NOT affected. This cannot be undone.',
-    requireType: false,
-    form: 'form-clear-scans',
-  },
   reset: {
-    title: '⚠ Full Database Reset?',
-    body:  'This wipes every table — including settings — and re-initialises from scratch. All scan history and review status will be permanently lost.',
+    title: '⚠ Reset Database?',
+    body:  'This deletes the RecipeScan database files, recreates the schema from scratch, and resets settings to defaults. Your photo files are NOT affected.',
     requireType: true,
     form: 'form-reset-db',
   },

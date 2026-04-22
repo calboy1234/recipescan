@@ -13,6 +13,7 @@ GET  /admin/run/<id>/log     — full log for any historical run
 """
 
 import csv
+import gc
 import importlib
 import io
 import json
@@ -104,6 +105,54 @@ def get_setting(key: str, default):
 
 def get_threshold():
     return get_setting("recipe_threshold", 0.60)
+
+
+def _database_file_paths(db_path: str) -> list[str]:
+    return [
+        db_path,
+        f"{db_path}-wal",
+        f"{db_path}-shm",
+        f"{db_path}-journal",
+    ]
+
+
+def _recreate_database_files():
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
+    if os.path.exists(DB_PATH):
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+
+    for path in _database_file_paths(DB_PATH):
+        if not os.path.exists(path):
+            continue
+
+        last_error = None
+        for _ in range(10):
+            try:
+                gc.collect()
+                os.remove(path)
+                last_error = None
+                break
+            except FileNotFoundError:
+                last_error = None
+                break
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.1)
+
+        if last_error is not None:
+            raise RuntimeError(f"Could not remove database file: {path}") from last_error
+
+    import init_db as _init_db
+    importlib.reload(_init_db)
 
 
 def _progress_payload(run: sqlite3.Row) -> dict:
@@ -865,30 +914,20 @@ def export():
     )
 
 
-# ── Admin: clear / reset ───────────────────────────────────────────────────────
-
-@app.route("/admin/clear-scans", methods=["POST"])
-def clear_scans():
-    conn = get_db()
-    conn.execute("DELETE FROM failed_images")
-    conn.execute("DELETE FROM ocr_log_lines")
-    conn.execute("DELETE FROM ocr_runs")
-    conn.execute("DELETE FROM ocr_results")
-    conn.execute("DELETE FROM images")
-    conn.commit()
-    conn.close()
-    return redirect(url_for("admin"))
-
+# ── Admin: reset ───────────────────────────────────────────────────────────────
 
 @app.route("/admin/reset-db", methods=["POST"])
 def reset_db():
-    conn = get_db()
-    for tbl in ("failed_images", "ocr_log_lines", "ocr_runs", "ocr_results", "images", "settings"):
-        conn.execute(f"DROP TABLE IF EXISTS {tbl}")
-    conn.commit()
-    conn.close()
-    import init_db as _init_db
-    importlib.reload(_init_db)
+    if ocr_running:
+        return render_template(
+            "error.html",
+            error="Cannot reset the database while OCR is running. Stop the pipeline first.",
+        ), 409
+
+    try:
+        _recreate_database_files()
+    except RuntimeError as exc:
+        return render_template("error.html", error=str(exc)), 500
     return redirect(url_for("admin"))
 
 
