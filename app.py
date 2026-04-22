@@ -106,6 +106,24 @@ def get_threshold():
     return get_setting("recipe_threshold", 0.60)
 
 
+def _progress_payload(run: sqlite3.Row) -> dict:
+    run_id = run["id"] if "id" in run.keys() else None
+    total = run["total"] or 0
+    current = min(run["current_count"] or 0, total) if total else 0
+    pct = round(max(0.0, min(100.0, 100 * current / total)), 1) if total else 0.0
+    return {
+        "run_id": run_id,
+        "status": run["status"],
+        "total": total,
+        "current": current,
+        "pct": pct,
+        "processed": run["processed"] or 0,
+        "skipped": run["skipped"] or 0,
+        "errors": run["errors"] or 0,
+        "running": ocr_running,
+    }
+
+
 # ── Gallery & image management ─────────────────────────────────────────────────
 
 @app.route("/")
@@ -542,21 +560,7 @@ def ocr_progress():
     if not run:
         return jsonify({"status": "idle"})
 
-    total   = run["total"] or 0
-    current = run["current_count"] or 0
-    pct     = round(100 * current / total, 1) if total else 0
-
-    return jsonify({
-        "run_id":    run["id"],
-        "status":    run["status"],
-        "total":     total,
-        "current":   current,
-        "pct":       pct,
-        "processed": run["processed"],
-        "skipped":   run["skipped"],
-        "errors":    run["errors"],
-        "running":   ocr_running,
-    })
+    return jsonify(_progress_payload(run))
 
 
 # ── Admin: SSE log stream ──────────────────────────────────────────────────────
@@ -585,7 +589,7 @@ def ocr_stream():
                 (run_id, last_line_id),
             ).fetchall()
             run_row = conn.execute(
-                "SELECT status, total, current_count, processed, skipped, errors "
+                "SELECT id, status, total, current_count, processed, skipped, errors "
                 "FROM ocr_runs WHERE id = ?",
                 (run_id,),
             ).fetchone()
@@ -597,18 +601,7 @@ def ocr_stream():
 
             # Push a progress update on every poll so the UI bar is truly real-time
             if run_row:
-                total   = run_row["total"] or 0
-                current = run_row["current_count"] or 0
-                pct     = round(100 * current / total, 1) if total else 0
-                progress_payload = json.dumps({
-                    "current":   current,
-                    "total":     total,
-                    "pct":       pct,
-                    "processed": run_row["processed"],
-                    "skipped":   run_row["skipped"],
-                    "errors":    run_row["errors"],
-                    "status":    run_row["status"],
-                })
+                progress_payload = json.dumps(_progress_payload(run_row))
                 yield f"data: __PROGRESS__:{progress_payload}\n\n"
 
                 if run_row["status"] not in ("running",):

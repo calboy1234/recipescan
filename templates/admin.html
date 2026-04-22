@@ -133,7 +133,7 @@
       {% if last_run['status'] == 'complete' %}
         ✓ {{ last_run['started_at'] }} —
         {{ last_run['processed'] }} processed,
-        {{ last_run['skipped'] }} skipped,
+        {{ last_run['skipped'] }} runtime skipped,
         {{ last_run['errors'] }} errors
       {% elif last_run['status'] == 'running' %}
         ⏳ running…
@@ -156,7 +156,7 @@
       </div>
       <div style="display:flex; gap:1rem; font-size:.73rem; color:var(--muted); margin-top:.3rem;">
         <span>✓ <span id="prog-processed">0</span> processed</span>
-        <span>⤼ <span id="prog-skipped">0</span> skipped</span>
+        <span>⤼ <span id="prog-skipped">0</span> runtime skipped</span>
         <span>✕ <span id="prog-errors">0</span> errors</span>
       </div>
     </div>
@@ -164,7 +164,8 @@
       <span class="muted" style="font-size:.76rem;">
         Pipeline log{% if last_run %} — Run #{{ last_run['id'] }} ({{ last_run['status'] }}){% endif %}
       </span>
-      <div class="gap">
+      <div class="gap" style="align-items:center;">
+        <span id="copy-status" class="muted" style="font-size:.72rem; min-width:8rem; text-align:right;"></span>
         <button onclick="copyLog()" class="btn btn-outline" style="font-size:.72rem; padding:.18rem .55rem;">Copy</button>
         <button onclick="clearLogDisplay()" class="btn btn-outline" style="font-size:.72rem; padding:.18rem .55rem;">Clear</button>
       </div>
@@ -239,6 +240,8 @@
 <script>
 // ── Log helpers ────────────────────────────────────────────────────────────────
 const logEl = document.getElementById('ocr-log');
+const copyStatusEl = document.getElementById('copy-status');
+let copyStatusTimer = null;
 
 function scrollToBottom() { logEl.scrollTop = logEl.scrollHeight; }
 function appendLine(line) {
@@ -246,7 +249,50 @@ function appendLine(line) {
   logEl.textContent += (logEl.textContent ? '\n' : '') + line;
   if (atBottom) scrollToBottom();
 }
-function copyLog()        { navigator.clipboard.writeText(logEl.textContent); }
+function setCopyStatus(message, isError = false) {
+  if (!copyStatusEl) return;
+  copyStatusEl.textContent = message;
+  copyStatusEl.style.color = isError ? '#c0392b' : 'var(--muted)';
+  if (copyStatusTimer) clearTimeout(copyStatusTimer);
+  copyStatusTimer = setTimeout(() => { copyStatusEl.textContent = ''; }, 2500);
+}
+
+function fallbackCopyText(text) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  return copied;
+}
+
+async function copyLog() {
+  const text = logEl.textContent || '';
+  if (!text.trim()) {
+    setCopyStatus('Nothing to copy.', true);
+    return;
+  }
+
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      setCopyStatus('Log copied.');
+      return;
+    }
+  } catch {}
+
+  if (fallbackCopyText(text)) {
+    setCopyStatus('Log copied.');
+  } else {
+    setCopyStatus('Copy failed.', true);
+  }
+}
+
 function clearLogDisplay(){ logEl.textContent = ''; }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -256,13 +302,15 @@ window.addEventListener('DOMContentLoaded', () => {
 // ── Progress bar helpers ───────────────────────────────────────────────────────
 function updateProgress(data) {
   const wrap = document.getElementById('progress-wrap');
+  const pct = Math.max(0, Math.min(100, Number(data.pct ?? 0)));
+  const current = data.current ?? 0;
+  const total = data.total ?? 0;
   wrap.style.display = '';
-  document.getElementById('progress-bar').style.width = (data.pct || 0) + '%';
-  document.getElementById('progress-pct').textContent = (data.pct || 0) + '%';
+  document.getElementById('progress-bar').style.width = pct + '%';
+  document.getElementById('progress-pct').textContent = `${pct.toFixed(1).replace(/\.0$/, '')}%`;
   document.getElementById('prog-processed').textContent = data.processed ?? 0;
   document.getElementById('prog-skipped').textContent   = data.skipped   ?? 0;
   document.getElementById('prog-errors').textContent    = data.errors    ?? 0;
-  const current = data.current ?? 0, total = data.total ?? 0;
   document.getElementById('progress-label').textContent =
     total ? `${current} / ${total} images` : 'Preparing…';
 }

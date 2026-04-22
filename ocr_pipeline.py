@@ -448,10 +448,10 @@ def ocr_image(path: str, file_hash: str, threshold: float) -> dict:
 
         lines.append(
             f"  score     : {detection['score']:.0%}  "
-            f"(keywords={sig['keyword_score']:.2f}  "
-            f"units={sig['unit_score']:.2f}  "
-            f"fractions={sig['fraction_score']:.2f}  "
-            f"ingredients={sig['ingredient_score']:.2f})"
+            f"(keywords={sig.get('keyword_score', 0.0):.2f}  "
+            f"units={sig.get('unit_score', 0.0):.2f}  "
+            f"fractions={sig.get('fraction_score', 0.0):.2f}  "
+            f"ingredients={sig.get('ingredient_score', 0.0):.2f})"
         )
 
         label = "RECIPE DETECTED — review in RecipeScan UI" if detection["score"] >= threshold else "not a recipe"
@@ -511,6 +511,16 @@ def write_result(cur: sqlite3.Cursor, result: dict, run_id: Optional[int]) -> st
         ),
     )
     return "processed"
+
+
+def progress_snapshot(
+    processed: int,
+    runtime_skipped: int,
+    errors: int,
+    total: int,
+) -> tuple[int, int, int, int]:
+    current_done = min(processed + runtime_skipped + errors, total)
+    return current_done, processed, runtime_skipped, errors
 
 
 def write_failure(cur: sqlite3.Cursor, run_id: Optional[int], result: dict):
@@ -630,12 +640,14 @@ def main(
                 pass
 
     # ── Progress update helper ─────────────────────────────────────────────────
-    def update_progress(current: int, total: int):
+    def update_progress(current: int, total: int, processed: int, skipped: int, errors: int):
         if run_id:
             try:
                 conn.execute(
-                    "UPDATE ocr_runs SET current_count=?, total=? WHERE id=?",
-                    (current, total, run_id)
+                    "UPDATE ocr_runs "
+                    "SET current_count=?, total=?, processed=?, skipped=?, errors=? "
+                    "WHERE id=?",
+                    (current, total, processed, skipped, errors, run_id)
                 )
                 # Note: caller commits as part of normal commit cycle
             except Exception:
@@ -728,7 +740,7 @@ def main(
         conn.commit()
 
     processed = 0
-    skipped   = skipped_pre if not retry_failed else 0
+    runtime_skipped = 0
     errors    = 0
     commit_buf = 0   # images written since last commit
 
@@ -792,12 +804,9 @@ def main(
                     if outcome == "processed":
                         processed += 1
                     elif outcome == "skipped":
-                        skipped += 1
+                        runtime_skipped += 1
                         log_db(f"[skip] {os.path.basename(path)}  (duplicate hash)")
-                    else:  # error from write_result (shouldn't happen for status=ok)
-                        errors += 1
-
-                    if result["status"] == "error":
+                    else:
                         errors += 1
                         write_failure(cur, run_id, result)
 
@@ -820,8 +829,12 @@ def main(
                 # Commit on schedule
                 commit_buf += 1
                 if commit_buf >= commit_every:
-                    current_done = processed + skipped + errors
-                    update_progress(current_done, total)
+                    current_done, processed_count, skipped_count, error_count = progress_snapshot(
+                        processed, runtime_skipped, errors, total
+                    )
+                    update_progress(
+                        current_done, total, processed_count, skipped_count, error_count
+                    )
                     conn.commit()
                     commit_buf = 0
 
@@ -829,8 +842,10 @@ def main(
                 _submit_next()
 
     # Final commit for anything still buffered
-    current_done = processed + skipped + errors
-    update_progress(current_done, total)
+    current_done, processed_count, skipped_count, error_count = progress_snapshot(
+        processed, runtime_skipped, errors, total
+    )
+    update_progress(current_done, total, processed_count, skipped_count, error_count)
     conn.commit()
 
     t_total = time.time() - t_run_start
@@ -842,7 +857,9 @@ def main(
     log_db(f"  Pipeline {'stopped early' if stop_event.is_set() else 'complete'}")
     log_db(f"  Duration   : {t_total:.0f}s  ({t_total/60:.1f} min)")
     log_db(f"  Processed  : {processed}")
-    log_db(f"  Skipped    : {skipped}  (already in DB)")
+    if not retry_failed:
+        log_db(f"  Pre-skipped: {skipped_pre}  (already in DB)")
+    log_db(f"  Runtime skipped : {runtime_skipped}")
     log_db(f"  Errors     : {errors}")
     if errors:
         log_db(f"  → Use 'Retry Errors' in the admin UI to re-process failed images.")
@@ -863,7 +880,7 @@ def main(
                    total=?, current_count=?,
                    status=?
                WHERE id=?""",
-            (processed, skipped, errors,
+            (processed, runtime_skipped, errors,
              total, current_done,
              final_status, run_id)
         )
@@ -880,7 +897,12 @@ def main(
         pass
 
     log("__DONE__")
-    return {"processed": processed, "skipped": skipped, "errors": errors}
+    return {
+        "processed": processed,
+        "skipped": runtime_skipped,
+        "errors": errors,
+        "pre_skipped": skipped_pre if not retry_failed else 0,
+    }
 
 
 if __name__ == "__main__":

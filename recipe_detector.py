@@ -178,9 +178,22 @@ def _clamp(value, lo=0.0, hi=1.0):
     return max(lo, min(hi, value))
 
 
+def _empty_signals() -> dict:
+    return {
+        "ingredient_hits": 0,
+        "ingredient_score": 0.0,
+        "keyword_hits": 0,
+        "keyword_score": 0.0,
+        "unit_hits": 0,
+        "unit_score": 0.0,
+        "fraction_hits": 0,
+        "fraction_score": 0.0,
+    }
+
+
 def score_text(text: str) -> dict:
     if not text or not text.strip():
-        return {"score": 0.0, "is_recipe": False, "signals": {}}
+        return {"score": 0.0, "is_recipe": False, "signals": _empty_signals()}
 
     text = _normalize_text(text)
     word_count = len(text.split())
@@ -210,6 +223,7 @@ def score_text(text: str) -> dict:
         "score": round(_clamp(total), 4),
         "is_recipe": total >= RECIPE_THRESHOLD,
         "signals": {
+            **_empty_signals(),
             "ingredient_hits":  ing_hits,
             "ingredient_score": round(ing_score, 3),
             "keyword_hits":     kw_hits,
