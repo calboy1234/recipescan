@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS images (
     file_path    TEXT UNIQUE NOT NULL,
     file_hash    TEXT UNIQUE NOT NULL,
     is_reviewed  INTEGER DEFAULT 0,
-    added_at     TEXT DEFAULT CURRENT_TIMESTAMP
+    added_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+    captured_at  TEXT
 )
 """)
 

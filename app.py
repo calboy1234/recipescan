@@ -66,8 +66,8 @@ _GALLERY_FILTERS: dict[str, tuple[str, list]] = {
 _SORT_OPTIONS: dict[str, str] = {
     "date_desc":  "img.added_at DESC",
     "date_asc":   "img.added_at ASC",
-    "score_desc": "ocr.recipe_score DESC NULLS LAST",
-    "score_asc":  "ocr.recipe_score ASC NULLS LAST",
+    "score_desc": "ocr.recipe_score DESC",
+    "score_asc":  "ocr.recipe_score ASC",
     "name_asc":   "img.file_path ASC",
     "name_desc":  "img.file_path DESC",
 }
@@ -202,7 +202,7 @@ def index():
     conn = get_db()
 
     total = conn.execute(
-        "SELECT COUNT(*) FROM images img "
+        "SELECT COUNT(DISTINCT img.id) FROM images img "
         "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
         "WHERE " + where_clause,
         params,

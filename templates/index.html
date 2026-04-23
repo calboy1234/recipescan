@@ -3,6 +3,49 @@
 
 {% block content %}
 
+{% macro render_card(row, threshold) %}
+  <div class="grid-card" id="card-{{ row['id'] }}">
+    <a href="/image/{{ row['id'] }}">
+      <img src="/photo/{{ row['id'] }}" alt="{{ row['file_path'] or 'Image' }}" loading="lazy"
+           onerror="this.style.display='none'" />
+    </a>
+
+    <!-- Reviewed dot indicator -->
+    <div class="reviewed-indicator {{ 'is-reviewed' if row['is_reviewed'] }}"
+         id="dot-{{ row['id'] }}" title="{{ 'Reviewed' if row['is_reviewed'] else 'Not reviewed' }}"></div>
+
+    <div class="info">
+      <a class="title" href="/image/{{ row['id'] }}">{{ (row['file_path'] or 'Unknown').split('/')[-1] }}</a>
+
+      <div class="gap" style="margin-top:.3rem; justify-content:space-between; align-items:center;">
+        <div class="gap" style="gap:.3rem;">
+          {% if row['ocr_id'] is none %}
+            <span class="badge badge-grey">Unscanned</span>
+          {% elif (row['recipe_score'] or 0) >= threshold %}
+            <span class="badge badge-orange">Recipe</span>
+            <span class="muted" style="font-size:.72rem;">{{ "%.0f"|format((row['recipe_score'] or 0)*100) }}%</span>
+          {% else %}
+            <span class="badge badge-grey">Not a recipe</span>
+            <span class="muted" style="font-size:.72rem;">{{ "%.0f"|format((row['recipe_score'] or 0)*100) }}%</span>
+          {% endif %}
+        </div>
+
+        <!-- Reviewed toggle button (AJAX) -->
+        {% if row['ocr_id'] is not none %}
+        <button
+          class="btn {{ 'btn-reviewed' if row['is_reviewed'] else 'btn-not-reviewed' }}"
+          style="font-size:.7rem; padding:.2rem .55rem;"
+          id="rbtn-{{ row['id'] }}"
+          onclick="toggleReview({{ row['id'] }}, this)"
+          title="{{ 'Mark as unreviewed' if row['is_reviewed'] else 'Mark as reviewed' }}">
+          {{ '✓' if row['is_reviewed'] else '○' }}
+        </button>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endmacro %}
+
 <!-- ── Threshold bar (inline, saves to /settings with return_to=index) ── -->
 <form action="/settings" method="post" id="threshold-form"
       style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
@@ -108,49 +151,6 @@
     {% endfor %}
   </div>
 {% endif %}
-
-{% macro render_card(row, threshold) %}
-  <div class="grid-card" id="card-{{ row['id'] }}">
-    <a href="/image/{{ row['id'] }}">
-      <img src="/photo/{{ row['id'] }}" alt="{{ row['file_path'] }}" loading="lazy"
-           onerror="this.style.display='none'" />
-    </a>
-
-    <!-- Reviewed dot indicator -->
-    <div class="reviewed-indicator {{ 'is-reviewed' if row['is_reviewed'] }}"
-         id="dot-{{ row['id'] }}" title="{{ 'Reviewed' if row['is_reviewed'] else 'Not reviewed' }}"></div>
-
-    <div class="info">
-      <a class="title" href="/image/{{ row['id'] }}">{{ row['file_path'].split('/')[-1] }}</a>
-
-      <div class="gap" style="margin-top:.3rem; justify-content:space-between; align-items:center;">
-        <div class="gap" style="gap:.3rem;">
-          {% if row['ocr_id'] is none %}
-            <span class="badge badge-grey">Unscanned</span>
-          {% elif (row['recipe_score'] or 0) >= threshold %}
-            <span class="badge badge-orange">Recipe</span>
-            <span class="muted" style="font-size:.72rem;">{{ "%.0f"|format((row['recipe_score'] or 0)*100) }}%</span>
-          {% else %}
-            <span class="badge badge-grey">Not a recipe</span>
-            <span class="muted" style="font-size:.72rem;">{{ "%.0f"|format((row['recipe_score'] or 0)*100) }}%</span>
-          {% endif %}
-        </div>
-
-        <!-- Reviewed toggle button (AJAX) -->
-        {% if row['ocr_id'] is not none %}
-        <button
-          class="btn {{ 'btn-reviewed' if row['is_reviewed'] else 'btn-not-reviewed' }}"
-          style="font-size:.7rem; padding:.2rem .55rem;"
-          id="rbtn-{{ row['id'] }}"
-          onclick="toggleReview({{ row['id'] }}, this)"
-          title="{{ 'Mark as unreviewed' if row['is_reviewed'] else 'Mark as reviewed' }}">
-          {{ '✓' if row['is_reviewed'] else '○' }}
-        </button>
-        {% endif %}
-      </div>
-    </div>
-  </div>
-{% endmacro %}
 
 {% if total_pages > 1 %}
 <div class="pagination">
