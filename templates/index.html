@@ -127,7 +127,12 @@
 </div>
 
 {% if not rows and not grouped_rows %}
-  <div class="card muted">No images found for this filter.</div>
+  <div class="card muted">
+    No images found for this filter.
+    {% if group_val == 'session' %}
+      <div style="font-size:.85rem; margin-top:.3rem;">(Note: Session view hides images with recipe scores under 12%.)</div>
+    {% endif %}
+  </div>
 {% else %}
 
 {% if group_val == 'session' %}

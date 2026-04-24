@@ -198,12 +198,13 @@ def index():
     if group_val == "session":
         conn = get_db()
         # Fetch ALL images matching the filter (but only necessary columns) to group them
+        # We explicitly filter for recipe_score >= 0.12 to hide low-scoring/unscanned noise in session view.
         all_rows = conn.execute(
             "SELECT img.id, img.file_path, img.is_reviewed, img.added_at, img.captured_at,"
             "       ocr.id as ocr_id, ocr.recipe_score "
             "FROM images img "
             "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
-            "WHERE " + where_clause + " "
+            "WHERE (" + where_clause + ") AND ocr.recipe_score >= 0.12 "
             "ORDER BY img.captured_at DESC, img.id DESC",
             params,
         ).fetchall()
