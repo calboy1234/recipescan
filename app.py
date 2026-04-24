@@ -193,74 +193,108 @@ def index():
     if params is None:
         params = [threshold]
 
-    # When grouping by session, we must sort by captured_at to ensure clusters are adjacent
+    # When grouping by session, we must handle things differently because we paginate
+    # groups (sessions) rather than individual images.
     if group_val == "session":
-        order_by = "img.captured_at DESC, img.id DESC"
-    else:
-        order_by = _SORT_OPTIONS[sort_val]   # safe: hardcoded strings only
+        conn = get_db()
+        # Fetch ALL images matching the filter (but only necessary columns) to group them
+        all_rows = conn.execute(
+            "SELECT img.id, img.file_path, img.is_reviewed, img.added_at, img.captured_at,"
+            "       ocr.id as ocr_id, ocr.recipe_score "
+            "FROM images img "
+            "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
+            "WHERE " + where_clause + " "
+            "ORDER BY img.captured_at DESC, img.id DESC",
+            params,
+        ).fetchall()
 
-    conn = get_db()
-
-    total = conn.execute(
-        "SELECT COUNT(DISTINCT img.id) FROM images img "
-        "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
-        "WHERE " + where_clause,
-        params,
-    ).fetchone()[0]
-
-    total_pages = max(1, (total + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
-    page        = max(1, min(page, total_pages))
-    offset      = (page - 1) * ITEMS_PER_PAGE
-
-    rows = conn.execute(
-        "SELECT img.id, img.file_path, img.is_reviewed, img.added_at, img.captured_at,"
-        "       ocr.id as ocr_id, ocr.recipe_score "
-        "FROM images img "
-        "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
-        "WHERE " + where_clause + " "
-        "ORDER BY " + order_by + " "
-        "LIMIT ? OFFSET ?",
-        params + [ITEMS_PER_PAGE, offset],
-    ).fetchall()
-
-    # Clustering logic for session view
-    grouped_rows = []
-    if group_val == "session" and rows:
-        from datetime import datetime
-        current_group = {"time": rows[0]["captured_at"], "entries": [rows[0]]}
-        grouped_rows.append(current_group)
-        
-        last_time = None
-        try:
-            last_time = datetime.strptime(rows[0]["captured_at"], "%Y-%m-%d %H:%M:%S")
-        except (ValueError, TypeError):
-            pass
-
-        for i in range(1, len(rows)):
-            row = rows[i]
-            row_time = None
+        # Clustering logic for session view
+        sessions = []
+        if all_rows:
+            from datetime import datetime
+            current_group = {"time": all_rows[0]["captured_at"], "entries": [all_rows[0]]}
+            sessions.append(current_group)
+            
+            last_time = None
             try:
-                row_time = datetime.strptime(row["captured_at"], "%Y-%m-%d %H:%M:%S")
+                last_time = datetime.strptime(all_rows[0]["captured_at"], "%Y-%m-%d %H:%M:%S")
             except (ValueError, TypeError):
                 pass
-            
-            is_new_group = True
-            if last_time and row_time:
-                diff = abs((last_time - row_time).total_seconds())
-                if diff < 300: # 5 minutes
-                    is_new_group = False
-            
-            if is_new_group:
-                current_group = {"time": row["captured_at"], "entries": [row]}
-                grouped_rows.append(current_group)
-            else:
-                current_group["entries"].append(row)
-            
-            # Always update last_time to the current row's time (even if it's None)
-            # to ensure the NEXT row comparison is correct.
-            last_time = row_time
 
-    conn.close()
+            for i in range(1, len(all_rows)):
+                row = all_rows[i]
+                row_time = None
+                try:
+                    row_time = datetime.strptime(row["captured_at"], "%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError):
+                    pass
+                
+                is_new_group = True
+                if last_time and row_time:
+                    diff = abs((last_time - row_time).total_seconds())
+                    if diff < 300: # 5 minutes
+                        is_new_group = False
+                
+                if is_new_group:
+                    current_group = {"time": row["captured_at"], "entries": [row]}
+                    sessions.append(current_group)
+                else:
+                    current_group["entries"].append(row)
+                
+                last_time = row_time
+
+            # Post-process sessions for average score
+            for s in sessions:
+                scores = [r["recipe_score"] for r in s["entries"] if r["recipe_score"] is not None]
+                s["avg_score"] = sum(scores) / len(scores) if scores else 0.0
+
+            # Sort sessions
+            if sort_val == "date_desc":
+                sessions.sort(key=lambda s: s["time"] or "", reverse=True)
+            elif sort_val == "date_asc":
+                sessions.sort(key=lambda s: s["time"] or "", reverse=False)
+            elif sort_val == "score_desc":
+                sessions.sort(key=lambda s: s["avg_score"], reverse=True)
+            elif sort_val == "score_asc":
+                sessions.sort(key=lambda s: s["avg_score"], reverse=False)
+
+        total = len(sessions)
+        total_pages = max(1, (total + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+        page = max(1, min(page, total_pages))
+        offset = (page - 1) * ITEMS_PER_PAGE
+        
+        grouped_rows = sessions[offset : offset + ITEMS_PER_PAGE]
+        rows = [] # Not used in template when group_val == 'session'
+        conn.close()
+
+    else:
+        order_by = _SORT_OPTIONS[sort_val]   # safe: hardcoded strings only
+        conn = get_db()
+
+        total = conn.execute(
+            "SELECT COUNT(DISTINCT img.id) FROM images img "
+            "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
+            "WHERE " + where_clause,
+            params,
+        ).fetchone()[0]
+
+        total_pages = max(1, (total + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+        page        = max(1, min(page, total_pages))
+        offset      = (page - 1) * ITEMS_PER_PAGE
+
+        rows = conn.execute(
+            "SELECT img.id, img.file_path, img.is_reviewed, img.added_at, img.captured_at,"
+            "       ocr.id as ocr_id, ocr.recipe_score "
+            "FROM images img "
+            "LEFT JOIN ocr_results ocr ON img.id = ocr.image_id "
+            "WHERE " + where_clause + " "
+            "ORDER BY " + order_by + " "
+            "LIMIT ? OFFSET ?",
+            params + [ITEMS_PER_PAGE, offset],
+        ).fetchall()
+        grouped_rows = []
+        conn.close()
+
     return render_template(
         "index.html",
         rows=rows, grouped_rows=grouped_rows, total=total, page=page, total_pages=total_pages,
