@@ -40,3 +40,7 @@ Alignment & Maintenance
 The system ensures consistency between experimentation and production by:
 1.  Text Reconstruction: The testing suite mimics the production pipeline's image_to_data reconstruction logic to ensure scoring is based on the exact layout stored in the production DB.
 2.  Web Interface Integration: The web interface allows for the monitoring and management of the OCR pipeline, providing visibility into its performance and results.
+
+Development Environment
+*   **Shell:** Primarily PowerShell (Windows).
+*   **Command Formatting:** Always prioritize PowerShell-compatible syntax for shell operations (e.g., use `;` for command chaining instead of `&&`).
