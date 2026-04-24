@@ -506,18 +506,18 @@ def admin_stats():
     }
 
     # 3. Score distribution (Histogram)
-    # Group scores into 10 bins: 0.0-0.1, 0.1-0.2, ... 0.9-1.0
+    # Group scores into 20 bins: 0.0-0.05, 0.05-0.1, ... 0.95-1.0
     distribution = conn.execute("""
-        SELECT CAST(recipe_score * 10 AS INTEGER) as bin, COUNT(*) as count
+        SELECT CAST(recipe_score * 20 AS INTEGER) as bin, COUNT(*) as count
         FROM ocr_results
         GROUP BY bin
         ORDER BY bin ASC
     """).fetchall()
     
-    dist_data = [0] * 11
+    dist_data = [0] * 20
     for row in distribution:
-        bin_idx = min(row["bin"], 10)
-        dist_data[bin_idx] = row["count"]
+        bin_idx = min(row["bin"], 19)
+        dist_data[bin_idx] += row["count"]
     stats["distribution"] = dist_data
 
     # 4. Processing History (last 10 runs)
