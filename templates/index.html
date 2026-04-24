@@ -135,10 +135,10 @@
     <div style="margin-bottom:2.5rem;">
       <div style="border-bottom:1px solid var(--border); padding-bottom:.4rem; margin-bottom:1rem; display:flex; justify-content:space-between; align-items:baseline;">
         <h2 style="margin:0; font-size:1.1rem; font-family:sans-serif;">Captured: {{ group.time }}</h2>
-        <span class="muted" style="font-size:.82rem;">{{ group.items|length }} image{{ 's' if group.items|length != 1 }}</span>
+        <span class="muted" style="font-size:.82rem;">{{ group.entries|length }} image{{ 's' if group.entries|length != 1 }}</span>
       </div>
       <div class="grid">
-        {% for row in group.items %}
+        {% for row in group.entries %}
           {{ render_card(row, threshold) }}
         {% endfor %}
       </div>

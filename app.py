@@ -227,7 +227,7 @@ def index():
     grouped_rows = []
     if group_val == "session" and rows:
         from datetime import datetime
-        current_group = {"time": rows[0]["captured_at"], "items": [rows[0]]}
+        current_group = {"time": rows[0]["captured_at"], "entries": [rows[0]]}
         grouped_rows.append(current_group)
         
         last_time = None
@@ -251,13 +251,14 @@ def index():
                     is_new_group = False
             
             if is_new_group:
-                current_group = {"time": row["captured_at"], "items": [row]}
+                current_group = {"time": row["captured_at"], "entries": [row]}
                 grouped_rows.append(current_group)
             else:
-                current_group["items"].append(row)
+                current_group["entries"].append(row)
             
-            if row_time:
-                last_time = row_time
+            # Always update last_time to the current row's time (even if it's None)
+            # to ensure the NEXT row comparison is correct.
+            last_time = row_time
 
     conn.close()
     return render_template(
